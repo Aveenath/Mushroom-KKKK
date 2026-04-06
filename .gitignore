@@ -1,0 +1,26 @@
+# Virtual environments
+venv/
+env/
+.env
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# Database files
+*.db
+mushroom_client.db
+
+# Large AI Model files
+*.pt
+mushroom_yolo.pt
+best.pt
+
+# Datasets and logs
+*.csv
+*.xlsx
+smartsense_readings.csv
+
+# IDEs
+.vscode/
+.idea/
