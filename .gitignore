@@ -11,10 +11,7 @@ __pycache__/
 *.db
 mushroom_client.db
 
-# Large AI Model files
-*.pt
-mushroom_yolo.pt
-best.pt
+
 
 # Datasets and logs
 *.csv
