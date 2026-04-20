@@ -102,15 +102,10 @@ if page == "Live Monitor & Forecast":
 
     st.markdown("---")
     st.subheader("🌦️ Outside Weather (Live & Forecast)")
-    loc_choice = st.selectbox("Select Farm Location:", ["Penang, MY", "Kedah (Sungai Petani), MY", "Perak (Kuala Kangsar), MY"])
+    st.markdown("**Farm Location:** Perak (Kuala Kangsar), MY")
     
-    # Lat/Lon for the areas
-    if loc_choice == "Penang, MY":
-        lat, lon = 5.4141, 100.3288 # George Town
-    elif loc_choice == "Kedah (Sungai Petani), MY":
-        lat, lon = 5.6419, 100.4877 # Sungai Petani
-    else:
-        lat, lon = 4.7730, 100.9410 # Kuala Kangsar
+    # Lat/Lon for Kuala Kangsar
+    lat, lon = 4.7730, 100.9410 # Kuala Kangsar
         
     try:
         # Fetch data from Open-Meteo API
