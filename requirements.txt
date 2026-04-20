@@ -1,9 +1,8 @@
 streamlit
 pandas
 plotly
-ultralytics
-Pillow
 scikit-learn
+ultralytics
 requests
 numpy
-opencv-python-headless
+Pillow
