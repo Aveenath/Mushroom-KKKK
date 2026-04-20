@@ -9,6 +9,10 @@ from ultralytics import YOLO
 from PIL import Image
 import numpy as np
 
+# Streamlit Cloud runs on UTC time. We manually offset +8 hours for Malaysia local time.
+def get_local_now():
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+
 st.set_page_config(page_title="Mushroom Farm OS", layout="wide")
 
 # --- SESSION STATE ---
@@ -130,7 +134,7 @@ if page == "Live Monitor & Forecast":
         df_weather['Time'] = pd.to_datetime(df_weather['Time'])
         
         # Filter from current hour to +24 hrs
-        current_hour_naive = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
+        current_hour_naive = get_local_now().replace(minute=0, second=0, microsecond=0)
         df_weather = df_weather[df_weather['Time'] >= current_hour_naive].head(24)
         
          # AUTOMATED RED ALERTS: External Heatwave Warning
@@ -179,7 +183,7 @@ if page == "Live Monitor & Forecast":
                         # Pass custom dataframe to analysis.py
                         predictions = get_predictions(df_upload) 
                         
-                        future_times = [datetime.datetime.now() + datetime.timedelta(hours=i) for i in range(1, 169)]
+                        future_times = [get_local_now() + datetime.timedelta(hours=i) for i in range(1, 169)]
                         forecast_df = pd.DataFrame({'Time': future_times, 'Predicted Temp (°C)': predictions})
                         
                         fig_forecast = px.line(forecast_df, x='Time', y='Predicted Temp (°C)', 
@@ -195,8 +199,8 @@ if page == "Live Monitor & Forecast":
 elif page == "Record Situation":
     st.title("📝 Record Daily Situation")
     with st.form("situation_form"):
-        date = st.date_input("Report Date", datetime.date.today())
-        time = st.time_input("Report Time", datetime.datetime.now().time())
+        date = st.date_input("Report Date", get_local_now().date())
+        time = st.time_input("Report Time", get_local_now().time())
         status = st.selectbox("Current Situation", ["Normal", "Disease Detected", "Harvesting", "Maintenance"])
         quality = st.radio("Mushroom Quality", options=["Bad", "Normal", "Good"], horizontal=True)
         disease = st.text_input("Disease Name (if any)", "None")
@@ -225,7 +229,7 @@ elif page == "Record Planting":
     with st.form("planting_form"):
         block_id = st.text_input("Batch / Block ID Number (e.g., OYS-001)")
         species = st.selectbox("Mushroom Species", ["Oyster Mushroom"])
-        planted_date = st.date_input("Inoculation/Planting Date", datetime.date.today())
+        planted_date = st.date_input("Inoculation/Planting Date", get_local_now().date())
         notes = st.text_area("Initial Conditions / Notes")
         
         if st.form_submit_button("Record & Calculate Harvest"):
@@ -496,7 +500,7 @@ elif page == "AI Image Detection":
             st.image(res_plotted, use_container_width=True)
             
             # --- LOGGING TO DATABASE ---
-            ts_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ts_now = get_local_now().strftime("%Y-%m-%d %H:%M:%S")
             fname = source.name if hasattr(source, 'name') else "Capture"
 
             if st.session_state.last_processed_file != fname:
@@ -520,7 +524,7 @@ elif page == "AI Image Detection":
             
             csv = df_log.to_csv(index=False).encode('utf-8')
             st.download_button(label="📥 Download Full Report", data=csv, 
-                               file_name=f"harvest_history_{datetime.date.today()}.csv", 
+                               file_name=f"harvest_history_{get_local_now().date()}.csv", 
                                mime="text/csv", use_container_width=True)
             
             if st.button("🗑️ Delete Database Records", use_container_width=True, type="primary"):
