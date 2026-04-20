@@ -448,6 +448,20 @@ elif page == "AI Image Detection":
 
     input_method = st.radio("Choose Input Method", ["📷 Camera Feed", "📂 File Upload"], horizontal=True)
     
+    # Custom CSS to restrict camera width and give it a 'Mobile Scanner' feel
+    st.markdown("""
+        <style>
+        [data-testid="stCameraInput"] {
+            max-width: 500px !important;
+            margin: 0 auto;
+            border: 8px solid #2e2e2e;
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: 0px 10px 20px rgba(0,0,0,0.3);
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     source = None
     if input_method == "📷 Camera Feed":
         source = st.camera_input("Scanner")
