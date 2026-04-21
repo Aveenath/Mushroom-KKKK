@@ -8,6 +8,7 @@ from analysis import get_predictions # This pulls the AI logic from your other f
 from ultralytics import YOLO
 from PIL import Image
 import numpy as np
+import hashlib
 
 # Streamlit Cloud runs on UTC time. We manually offset +8 hours for Malaysia local time.
 def get_local_now():
@@ -18,6 +19,10 @@ st.set_page_config(page_title="Mushroom Farm OS", layout="wide")
 # --- SESSION STATE ---
 if 'last_processed_file' not in st.session_state:
     st.session_state.last_processed_file = None
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'username' not in st.session_state:
+    st.session_state.username = ""
 
 st.markdown("""
     <style>
@@ -48,15 +53,106 @@ def get_db_connection():
 # Ensure tables exist
 conn = get_db_connection()
 conn.execute('''CREATE TABLE IF NOT EXISTS situation_reports 
-             (date TEXT, status TEXT, disease_noted TEXT, quality TEXT, notes TEXT)''')
+             (date TEXT, status TEXT, disease_noted TEXT, quality TEXT, notes TEXT, username TEXT)''')
 conn.execute('''CREATE TABLE IF NOT EXISTS planting_records
-             (block_id TEXT, species TEXT, planted_date TEXT, notes TEXT, predicted_harvest TEXT)''')
+             (block_id TEXT, species TEXT, planted_date TEXT, notes TEXT, predicted_harvest TEXT, username TEXT)''')
 conn.execute('''CREATE TABLE IF NOT EXISTS ai_harvest_logs
-             (timestamp TEXT, filename TEXT, young INTEGER, ready INTEGER, old INTEGER, total_clusters INTEGER)''')
+             (timestamp TEXT, filename TEXT, young INTEGER, ready INTEGER, old INTEGER, total_clusters INTEGER, username TEXT)''')
+conn.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT)''')
 conn.close()
 
+# --- AUTHENTICATION LOGIC ---
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def create_user(username, password):
+    conn = get_db_connection()
+    try:
+        conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hash_password(password)))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def verify_user(username, password):
+    conn = get_db_connection()
+    cursor = conn.execute("SELECT password FROM users WHERE username = ?", (username,))
+    result = cursor.fetchone()
+    conn.close()
+    if result and result[0] == hash_password(password):
+        return True
+    return False
+
+# --- APP ROUTING ---
+if not st.session_state.logged_in:
+    # Add vertical padding to center vertically
+    st.write("<br><br><br>", unsafe_allow_html=True)
+    
+    # Use columns to create a centered card layout
+    col1, col2, col3 = st.columns([1, 1.2, 1])
+    
+    with col2:
+        # Premium Styled Header
+        st.markdown(
+            """
+            <div style='text-align: center; padding-bottom: 20px;'>
+                <h1 style='color: #4CAF50; font-size: 3.5rem; margin-bottom: 0px;'>🍄 Mushroom OS</h1>
+                <p style='color: #AAAAAA; font-size: 1.1rem; margin-top: 5px;'>Please log in to access your secure farm dashboard.</p>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+        
+        tab1, tab2 = st.tabs(["🔒 Log In", "📝 Sign Up"])
+        
+        with tab1:
+            with st.form("login_form", border=True):
+                l_user = st.text_input("Username")
+                l_pass = st.text_input("Password", type="password")
+                st.write("") # Spacer
+                submit = st.form_submit_button("Log In", use_container_width=True)
+                
+                if submit:
+                    if verify_user(l_user, l_pass):
+                        st.session_state.logged_in = True
+                        st.session_state.username = l_user
+                        st.success("Login successful!")
+                        st.rerun()
+                    else:
+                        st.error("Incorrect username or password")
+                        
+        with tab2:
+            with st.form("signup_form", border=True):
+                s_user = st.text_input("New Username")
+                s_pass = st.text_input("New Password", type="password")
+                s_conf = st.text_input("Confirm Password", type="password")
+                st.write("") # Spacer
+                signup_submit = st.form_submit_button("Create Account", use_container_width=True)
+                
+                if signup_submit:
+                    if s_pass != s_conf:
+                        st.error("Passwords do not match!")
+                    elif len(s_user) < 3 or len(s_pass) < 5:
+                        st.error("Username (min 3 chars) and Password (min 5 chars) required.")
+                    else:
+                        if create_user(s_user, s_pass):
+                            st.success("Account created successfully! Please switch to the Log In tab.")
+                        else:
+                            st.error("Username already exists!")
+    
+    # STOP EXECUTION HERE IF NOT LOGGED IN
+    st.stop()
+
 # --- NAVIGATION ---
+st.sidebar.markdown(f"**Welcome, {st.session_state.username}!**")
 page = st.sidebar.radio("Go to:", ["Live Monitor & Forecast", "Record Situation", "Record Planting", "SOP Procedures", "Quality Analysis", "AI Image Detection"])
+st.sidebar.markdown("---")
+if st.sidebar.button("Log Out"):
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.rerun()
 
 # --- PAGE 1: MONITOR & FORECAST ---
 if page == "Live Monitor & Forecast":
@@ -176,10 +272,15 @@ if page == "Live Monitor & Forecast":
                 with st.spinner('Analyzing uploaded dataset...'):
                     try:
                         # Pass custom dataframe to analysis.py
-                        predictions = get_predictions(df_upload) 
+                        predictions, r2, mae = get_predictions(df_upload) 
                         
                         future_times = [get_local_now() + datetime.timedelta(hours=i) for i in range(1, 169)]
                         forecast_df = pd.DataFrame({'Time': future_times, 'Predicted Temp (°C)': predictions})
+                        
+                        # Display the Evaluation Metrics
+                        m_col1, m_col2 = st.columns(2)
+                        m_col1.metric("🎯 Model Accuracy (R² Score)", f"{r2 * 100:.1f}%")
+                        m_col2.metric("📉 Average Error (MAE)", f"± {mae:.2f} °C")
                         
                         fig_forecast = px.line(forecast_df, x='Time', y='Predicted Temp (°C)', 
                                              title="Expected Temperature Trend (Next 7 Days)",
@@ -204,8 +305,8 @@ elif page == "Record Situation":
         if st.form_submit_button("Save Report"):
             report_datetime = f"{date} {time.strftime('%H:%M')}"
             conn = get_db_connection()
-            conn.execute("INSERT INTO situation_reports VALUES (?,?,?,?,?)", 
-                         (report_datetime, status, disease, quality, notes))
+            conn.execute("INSERT INTO situation_reports VALUES (?,?,?,?,?,?)", 
+                         (report_datetime, status, disease, quality, notes, st.session_state.username))
             conn.commit()
             conn.close()
             st.success("Situation recorded successfully!")
@@ -237,8 +338,8 @@ elif page == "Record Planting":
                 
                 # 2. Database Insert
                 conn = get_db_connection()
-                conn.execute("INSERT INTO planting_records VALUES (?,?,?,?,?)", 
-                             (block_id, species, planted_str, notes, predicted_harvest))
+                conn.execute("INSERT INTO planting_records VALUES (?,?,?,?,?,?)", 
+                             (block_id, species, planted_str, notes, predicted_harvest, st.session_state.username))
                 conn.commit()
                 conn.close()
                 st.success(f"Planting recorded! Expect harvest between **{predicted_harvest}**")
@@ -247,7 +348,7 @@ elif page == "Record Planting":
     st.subheader("📋 Current Active Inventory")
     conn = get_db_connection()
     try:
-        planting_df = pd.read_sql("SELECT block_id AS 'Block ID', species AS 'Species', planted_date AS 'Planted Date', predicted_harvest AS 'Predicted Harvest Window', notes AS 'Notes' FROM planting_records ORDER BY planted_date DESC", conn)
+        planting_df = pd.read_sql("SELECT block_id AS 'Block ID', species AS 'Species', planted_date AS 'Planted Date', predicted_harvest AS 'Predicted Harvest Window', notes AS 'Notes' FROM planting_records WHERE username = ? ORDER BY planted_date DESC", conn, params=(st.session_state.username,))
         if not planting_df.empty:
             # 1. CSV EXPORT
             csv = planting_df.to_csv(index=False).encode('utf-8')
@@ -282,7 +383,7 @@ elif page == "Record Planting":
                 if st.button("🚨 Confirm Delete Selected Blocks"):
                     conn_delete = get_db_connection()
                     for block in rows_to_delete['Block ID']:
-                        conn_delete.execute("DELETE FROM planting_records WHERE block_id = ?", (block,))
+                        conn_delete.execute("DELETE FROM planting_records WHERE block_id = ? AND username = ?", (block, st.session_state.username))
                     conn_delete.commit()
                     conn_delete.close()
                     st.success("Blocks deleted successfully!")
@@ -332,6 +433,7 @@ elif page == "SOP Procedures":
         st.subheader("🛡️ 2. Disease & Contamination")
         with st.expander("Trichoderma (Green Mold) Protocol", expanded=True):
             st.error("**CRITICAL: Highly Contagious**")
+            st.image("picture/Trichoderma.jpeg", use_container_width=True)
             st.markdown("""
             1. **Identification:** Fluffy white patches turning into forest-green powder.
             2. **Immediate Action:** Remove the contaminated bag without squeezing it.
@@ -341,6 +443,7 @@ elif page == "SOP Procedures":
             
         with st.expander("Neurospora (Orange Mold)"):
             st.warning("**Fast Spreading Spores**")
+            st.image("picture/Neurospora.jpeg", use_container_width=True)
             st.markdown("""
             - Orange/Pink powdery mold spread quickly via airborne dust.
             - Carefully isolate out of the facility immediately.
@@ -348,6 +451,7 @@ elif page == "SOP Procedures":
             """)
             
         with st.expander("General Pest Control"):
+            st.image("picture/general_pest_control.jpeg", use_container_width=True)
             st.markdown("""
             - **Fungus Gnats & Flies:** Install yellow sticky insect traps near light panels.
             - Maintain strict hygiene. Ensure all workers deploy footbaths before entering.
@@ -355,6 +459,7 @@ elif page == "SOP Procedures":
 
     st.markdown("---")
     st.subheader("✂️ 3. Harvesting Guidelines")
+    st.image("picture/Harvesting_Guidelines.jpeg", use_container_width=True)
     st.success("Optimal Harvesting Window: Just before the cap edges flatten or begin turning upwards.")
     st.markdown("""
     - **Technique:** Firmly hold the base of the mushroom cluster, gently twist, and pull. Do not cut with a knife as leaving stump remnants promotes rotting.
@@ -366,8 +471,9 @@ elif page == "SOP Procedures":
 elif page == "Quality Analysis":
     st.title("📈 Quality & Disease Analysis")
     conn = get_db_connection()
-    reports_df = pd.read_sql("SELECT * FROM situation_reports ORDER BY date DESC", conn)
+    reports_df = pd.read_sql("SELECT * FROM situation_reports WHERE username = ? ORDER BY date DESC", conn, params=(st.session_state.username,))
     reports_df.rename(columns={"date": "Date & Time"}, inplace=True)
+    reports_df.drop(columns=['username'], inplace=True, errors='ignore')
     conn.close()
     
     if not reports_df.empty:
@@ -426,7 +532,7 @@ elif page == "Quality Analysis":
             if st.button("🚨 Confirm Delete Selected Logs"):
                 conn = get_db_connection()
                 for dt in rows_to_delete['Date & Time']:
-                    conn.execute("DELETE FROM situation_reports WHERE date = ?", (dt,))
+                    conn.execute("DELETE FROM situation_reports WHERE date = ? AND username = ?", (dt, st.session_state.username))
                 conn.commit()
                 conn.close()
                 st.success("Logs successfully deleted!")
@@ -500,8 +606,8 @@ elif page == "AI Image Detection":
 
             if st.session_state.last_processed_file != fname:
                 conn_log = get_db_connection()
-                conn_log.execute("INSERT INTO ai_harvest_logs (timestamp, filename, young, ready, old, total_clusters) VALUES (?, ?, ?, ?, ?, ?)", 
-                                 (ts_now, fname, c_young, c_ready, c_old, len(detections)))
+                conn_log.execute("INSERT INTO ai_harvest_logs (timestamp, filename, young, ready, old, total_clusters, username) VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                                 (ts_now, fname, c_young, c_ready, c_old, len(detections), st.session_state.username))
                 conn_log.commit()
                 conn_log.close()
                 st.session_state.last_processed_file = fname
@@ -510,7 +616,7 @@ elif page == "AI Image Detection":
     with col_side:
         st.subheader("📋 Persistent Harvest Log")
         conn_view = get_db_connection()
-        df_log = pd.read_sql("SELECT * FROM ai_harvest_logs ORDER BY timestamp DESC", conn_view)
+        df_log = pd.read_sql("SELECT * FROM ai_harvest_logs WHERE username = ? ORDER BY timestamp DESC", conn_view, params=(st.session_state.username,))
         conn_view.close()
         
         if not df_log.empty:
@@ -524,7 +630,7 @@ elif page == "AI Image Detection":
             
             if st.button("🗑️ Delete Database Records", use_container_width=True, type="primary"):
                 conn_del = get_db_connection()
-                conn_del.execute("DELETE FROM ai_harvest_logs")
+                conn_del.execute("DELETE FROM ai_harvest_logs WHERE username = ?", (st.session_state.username,))
                 conn_del.commit()
                 conn_del.close()
                 st.session_state.last_processed_file = None

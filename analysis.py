@@ -1,5 +1,6 @@
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import r2_score, mean_absolute_error
 import sqlite3
 
 def get_predictions(df=None):
@@ -14,11 +15,16 @@ def get_predictions(df=None):
     # Train AI Model
     model = RandomForestRegressor(n_estimators=50).fit(df[['hour']], df['temp'])
     
+    # Evaluate Model Performance on Training Data
+    train_preds = model.predict(df[['hour']])
+    r2 = r2_score(df['temp'], train_preds)
+    mae = mean_absolute_error(df['temp'], train_preds)
+    
     # Predict next 7 days (168 hours)
     last_hour = df['ts'].max().hour
     future = pd.DataFrame({'hour': [(last_hour + i) % 24 for i in range(1, 169)]})
     preds = model.predict(future)
-    return preds
+    return preds, r2, mae
 
 def predict_harvest_date(plant_date_str):
     import datetime
