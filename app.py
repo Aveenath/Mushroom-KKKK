@@ -234,7 +234,7 @@ if page == "Live Monitor & Forecast":
             st.warning(f"⚠️ **OUTSIDE HEATWAVE ALERT:** Forecast predicts peak outside temperatures hitting {max_pred:.1f}°C in the next 24 hours.")
         
         fig_weather = px.line(df_weather, x='Time', y='Outside Temp (°C)', 
-                              title=f"24-Hour Outside Weather Prediction ({loc_choice})",
+                              title="24-Hour Outside Weather Prediction (Kuala Kangsar)",
                               line_shape='spline', render_mode='svg')
         fig_weather.update_traces(line_color='#00BFFF')
         fig_weather.update_layout(xaxis_title="Time", yaxis_title="Temperature (°C)")
