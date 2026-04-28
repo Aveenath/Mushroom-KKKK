@@ -247,39 +247,61 @@ if page == "Live Monitor & Forecast":
     st.markdown("---")
     st.subheader("🔮 7-Day Predictive Forecast")
     st.write("Automatically fetch and analyze live sensor data from didikhub.com to forecast the next 7 days.")
+    uploaded_csv = st.file_uploader("📂 Manual CSV Fallback (Optional - Upload smartsense data here)", type=['csv'])
     
-    if st.button("🔄 Sync Live Data & Run Forecast", type="primary"):
-        with st.spinner('Fetching live database and training AI...'):
+    if st.button("🔄 Run AI Forecast", type="primary"):
+        with st.spinner('Fetching data and training AI...'):
             df_upload = None
-            try:
-                # Fetch live data using requests with a User-Agent to prevent timeouts
-                url = 'https://didikhub.com/smartsense/readings.php'
-                html_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).text
-                df_live = pd.read_html(html_data)[0]
-                
-                # Dynamically identify Timestamp and Temperature columns
-                col_lower = {c: str(c).lower() for c in df_live.columns}
-                ts_col = next((c for c, l in col_lower.items() if 'time' in l or 'ts' in l), None)
-                temp_col = next((c for c, l in col_lower.items() if 'temp' in l), None)
-                
-                # Extract and rename columns for analysis.py
-                df_upload = df_live[[ts_col, temp_col]].copy()
-                df_upload.columns = ['ts', 'temp']
-                
-                # Clean the data
-                df_upload['temp'] = pd.to_numeric(df_upload['temp'], errors='coerce')
-                df_upload = df_upload.dropna()
-                st.success("Successfully synced with live didikhub.com database!")
-                
-            except Exception as e:
-                st.warning("⚠️ Live sync blocked by destination firewall (Streamlit Cloud IP Block). Falling back to local offline database...")
-                conn = get_db_connection()
+            
+            if uploaded_csv is not None:
                 try:
-                    df_upload = pd.read_sql("SELECT ts, temp FROM sensors ORDER BY ts DESC", conn)
-                except Exception:
-                    df_upload = pd.DataFrame()
-                finally:
-                    conn.close()
+                    df_upload = pd.read_csv(uploaded_csv)
+                    col_lower = {c: str(c).lower() for c in df_upload.columns}
+                    ts_col = next((c for c, l in col_lower.items() if 'time' in l or 'ts' in l), None)
+                    temp_col = next((c for c, l in col_lower.items() if 'temp' in l), None)
+                    
+                    if ts_col and temp_col:
+                        df_upload = df_upload[[ts_col, temp_col]].copy()
+                        df_upload.columns = ['ts', 'temp']
+                        df_upload['temp'] = pd.to_numeric(df_upload['temp'], errors='coerce')
+                        df_upload = df_upload.dropna()
+                        st.success("Successfully loaded offline data from uploaded CSV!")
+                    else:
+                        st.error("Uploaded CSV must contain Timestamp and Temperature columns.")
+                        df_upload = None
+                except Exception as e:
+                    st.error(f"Error reading CSV: {e}")
+                    df_upload = None
+            else:
+                try:
+                    # Fetch live data using requests with a User-Agent to prevent timeouts
+                    url = 'https://didikhub.com/smartsense/readings.php'
+                    html_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).text
+                    df_live = pd.read_html(html_data)[0]
+                    
+                    # Dynamically identify Timestamp and Temperature columns
+                    col_lower = {c: str(c).lower() for c in df_live.columns}
+                    ts_col = next((c for c, l in col_lower.items() if 'time' in l or 'ts' in l), None)
+                    temp_col = next((c for c, l in col_lower.items() if 'temp' in l), None)
+                    
+                    # Extract and rename columns for analysis.py
+                    df_upload = df_live[[ts_col, temp_col]].copy()
+                    df_upload.columns = ['ts', 'temp']
+                    
+                    # Clean the data
+                    df_upload['temp'] = pd.to_numeric(df_upload['temp'], errors='coerce')
+                    df_upload = df_upload.dropna()
+                    st.success("Successfully synced with live didikhub.com database!")
+                    
+                except Exception as e:
+                    st.warning("⚠️ Live sync blocked by destination firewall (Streamlit Cloud IP Block). Falling back to local offline database...")
+                    conn = get_db_connection()
+                    try:
+                        df_upload = pd.read_sql("SELECT ts, temp FROM sensors ORDER BY ts DESC", conn)
+                    except Exception:
+                        df_upload = pd.DataFrame()
+                    finally:
+                        conn.close()
 
             if df_upload is not None and not df_upload.empty:
                 try:

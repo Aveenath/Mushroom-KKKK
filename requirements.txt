@@ -8,3 +8,4 @@ numpy
 Pillow
 lxml
 html5lib
+paho-mqtt
