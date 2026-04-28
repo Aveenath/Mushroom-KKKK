@@ -250,10 +250,11 @@ if page == "Live Monitor & Forecast":
     
     if st.button("🔄 Sync Live Data & Run Forecast", type="primary"):
         with st.spinner('Fetching live database and training AI...'):
+            df_upload = None
             try:
                 # Fetch live data using requests with a User-Agent to prevent timeouts
                 url = 'https://didikhub.com/smartsense/readings.php'
-                html_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15).text
+                html_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).text
                 df_live = pd.read_html(html_data)[0]
                 
                 # Dynamically identify Timestamp and Temperature columns
@@ -266,31 +267,42 @@ if page == "Live Monitor & Forecast":
                 df_upload.columns = ['ts', 'temp']
                 
                 # Clean the data
-                # Convert temp to numeric (this turns repeated text headers into NaN)
                 df_upload['temp'] = pd.to_numeric(df_upload['temp'], errors='coerce')
-                # Drop rows with NaN (removes bad headers and missing data)
                 df_upload = df_upload.dropna()
+                st.success("Successfully synced with live didikhub.com database!")
                 
-                # Train the AI Model
-                predictions, r2, mae = get_predictions(df_upload) 
-                
-                future_times = [get_local_now() + datetime.timedelta(hours=i) for i in range(1, 169)]
-                forecast_df = pd.DataFrame({'Time': future_times, 'Predicted Temp (°C)': predictions})
-                
-                # Display the Evaluation Metrics
-                m_col1, m_col2 = st.columns(2)
-                m_col1.metric("🎯 Model Accuracy (R² Score)", f"{r2 * 100:.1f}%")
-                m_col2.metric("📉 Average Error (MAE)", f"± {mae:.2f} °C")
-                
-                fig_forecast = px.line(forecast_df, x='Time', y='Predicted Temp (°C)', 
-                                     title="Expected Temperature Trend (Next 7 Days)",
-                                     line_shape='spline', render_mode='svg')
-                fig_forecast.update_traces(line_color='#FF4B4B')
-                st.plotly_chart(fig_forecast, use_container_width=True)
-                
-                st.success("Successfully synced with live database and generated forecast!")
             except Exception as e:
-                st.error(f"Could not connect to live database or generate forecast: {e}")
+                st.warning("⚠️ Live sync blocked by destination firewall (Streamlit Cloud IP Block). Falling back to local offline database...")
+                conn = get_db_connection()
+                try:
+                    df_upload = pd.read_sql("SELECT ts, temp FROM sensors ORDER BY ts DESC", conn)
+                except Exception:
+                    df_upload = pd.DataFrame()
+                finally:
+                    conn.close()
+
+            if df_upload is not None and not df_upload.empty:
+                try:
+                    # Train the AI Model
+                    predictions, r2, mae = get_predictions(df_upload) 
+                    
+                    future_times = [get_local_now() + datetime.timedelta(hours=i) for i in range(1, 169)]
+                    forecast_df = pd.DataFrame({'Time': future_times, 'Predicted Temp (°C)': predictions})
+                    
+                    # Display the Evaluation Metrics
+                    m_col1, m_col2 = st.columns(2)
+                    m_col1.metric("🎯 Model Accuracy (R² Score)", f"{r2 * 100:.1f}%")
+                    m_col2.metric("📉 Average Error (MAE)", f"± {mae:.2f} °C")
+                    
+                    fig_forecast = px.line(forecast_df, x='Time', y='Predicted Temp (°C)', 
+                                         title="Expected Temperature Trend (Next 7 Days)",
+                                         line_shape='spline', render_mode='svg')
+                    fig_forecast.update_traces(line_color='#FF4B4B')
+                    st.plotly_chart(fig_forecast, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Could not generate forecast: {e}")
+            else:
+                st.error("No data available to generate forecast. Please run pipeline first.")
 
 # --- PAGE 2: RECORD SITUATION (The input part for your client) ---
 elif page == "Record Situation":
