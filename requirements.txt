@@ -6,3 +6,5 @@ ultralytics
 requests
 numpy
 Pillow
+lxml
+html5lib

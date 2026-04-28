@@ -246,50 +246,50 @@ if page == "Live Monitor & Forecast":
     # 2. The Forecasting Section
     st.markdown("---")
     st.subheader("🔮 7-Day Predictive Forecast")
-    st.write("Upload a historical dataset (CSV/Excel) to automatically analyze its patterns and forecast the next 7 days.")
+    st.write("Automatically fetch and analyze live sensor data from didikhub.com to forecast the next 7 days.")
     
-    uploaded_forecast = st.file_uploader("Upload Historical Data (CSV or Excel)", type=["csv", "xlsx"])
-    if uploaded_forecast is not None:
-        if uploaded_forecast.name.endswith('.csv'):
-            df_upload = pd.read_csv(uploaded_forecast)
-        else:
-            df_upload = pd.read_excel(uploaded_forecast)
-            
-        # Dynamically identify Timestamp and Temperature columns based on typical keywords
-        col_lower = {c: str(c).lower() for c in df_upload.columns}
-        
-        ts_col = next((c for c, l in col_lower.items() if 'time' in l or 'ts' in l or 'date' in l), None)
-        temp_col = next((c for c, l in col_lower.items() if 'temp' in l), None)
-        
-        if not ts_col or not temp_col:
-            st.error("Uploaded file must contain a timestamp/time column and a temperature column.")
-        else:
-            # Rename the found columns to exactly what 'analysis.py' expects
-            df_upload = df_upload.rename(columns={ts_col: 'ts', temp_col: 'temp'})
-            
-            st.success(f"Successfully detected '{ts_col}' as Time and '{temp_col}' as Temp!")
-            if st.button("Run AI Analysis on Uploaded Data"):
-                with st.spinner('Analyzing uploaded dataset...'):
-                    try:
-                        # Pass custom dataframe to analysis.py
-                        predictions, r2, mae = get_predictions(df_upload) 
-                        
-                        future_times = [get_local_now() + datetime.timedelta(hours=i) for i in range(1, 169)]
-                        forecast_df = pd.DataFrame({'Time': future_times, 'Predicted Temp (°C)': predictions})
-                        
-                        # Display the Evaluation Metrics
-                        m_col1, m_col2 = st.columns(2)
-                        m_col1.metric("🎯 Model Accuracy (R² Score)", f"{r2 * 100:.1f}%")
-                        m_col2.metric("📉 Average Error (MAE)", f"± {mae:.2f} °C")
-                        
-                        fig_forecast = px.line(forecast_df, x='Time', y='Predicted Temp (°C)', 
-                                             title="Expected Temperature Trend (Next 7 Days)",
-                                             line_shape='spline', render_mode='svg')
-                        fig_forecast.update_traces(line_color='#FF4B4B')
-                        st.plotly_chart(fig_forecast, use_container_width=True)
-                        st.success("Analysis complete based on your custom file!")
-                    except Exception as e:
-                        st.error(f"Could not generate forecast: {e}")
+    if st.button("🔄 Sync Live Data & Run Forecast", type="primary"):
+        with st.spinner('Fetching live database and training AI...'):
+            try:
+                # Fetch live data using pandas read_html
+                url = 'https://didikhub.com/smartsense/readings.php'
+                df_live = pd.read_html(url)[0]
+                
+                # Dynamically identify Timestamp and Temperature columns
+                col_lower = {c: str(c).lower() for c in df_live.columns}
+                ts_col = next((c for c, l in col_lower.items() if 'time' in l or 'ts' in l), None)
+                temp_col = next((c for c, l in col_lower.items() if 'temp' in l), None)
+                
+                # Extract and rename columns for analysis.py
+                df_upload = df_live[[ts_col, temp_col]].copy()
+                df_upload.columns = ['ts', 'temp']
+                
+                # Clean the data
+                # Convert temp to numeric (this turns repeated text headers into NaN)
+                df_upload['temp'] = pd.to_numeric(df_upload['temp'], errors='coerce')
+                # Drop rows with NaN (removes bad headers and missing data)
+                df_upload = df_upload.dropna()
+                
+                # Train the AI Model
+                predictions, r2, mae = get_predictions(df_upload) 
+                
+                future_times = [get_local_now() + datetime.timedelta(hours=i) for i in range(1, 169)]
+                forecast_df = pd.DataFrame({'Time': future_times, 'Predicted Temp (°C)': predictions})
+                
+                # Display the Evaluation Metrics
+                m_col1, m_col2 = st.columns(2)
+                m_col1.metric("🎯 Model Accuracy (R² Score)", f"{r2 * 100:.1f}%")
+                m_col2.metric("📉 Average Error (MAE)", f"± {mae:.2f} °C")
+                
+                fig_forecast = px.line(forecast_df, x='Time', y='Predicted Temp (°C)', 
+                                     title="Expected Temperature Trend (Next 7 Days)",
+                                     line_shape='spline', render_mode='svg')
+                fig_forecast.update_traces(line_color='#FF4B4B')
+                st.plotly_chart(fig_forecast, use_container_width=True)
+                
+                st.success("Successfully synced with live database and generated forecast!")
+            except Exception as e:
+                st.error(f"Could not connect to live database or generate forecast: {e}")
 
 # --- PAGE 2: RECORD SITUATION (The input part for your client) ---
 elif page == "Record Situation":
