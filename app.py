@@ -251,9 +251,10 @@ if page == "Live Monitor & Forecast":
     if st.button("🔄 Sync Live Data & Run Forecast", type="primary"):
         with st.spinner('Fetching live database and training AI...'):
             try:
-                # Fetch live data using pandas read_html
+                # Fetch live data using requests with a User-Agent to prevent timeouts
                 url = 'https://didikhub.com/smartsense/readings.php'
-                df_live = pd.read_html(url)[0]
+                html_data = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15).text
+                df_live = pd.read_html(html_data)[0]
                 
                 # Dynamically identify Timestamp and Temperature columns
                 col_lower = {c: str(c).lower() for c in df_live.columns}
