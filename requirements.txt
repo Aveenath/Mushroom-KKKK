@@ -9,3 +9,8 @@ Pillow
 lxml
 html5lib
 paho-mqtt
+streamlit-webrtc
+av
+joblib
+groq
+python-dotenv
