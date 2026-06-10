@@ -11,8 +11,6 @@ __pycache__/
 *.db
 mushroom_client.db
 
-
-
 # Datasets and logs
 *.csv
 *.xlsx
@@ -21,3 +19,6 @@ smartsense_readings.csv
 # IDEs
 .vscode/
 .idea/
+
+# Claude Code
+.claude/
