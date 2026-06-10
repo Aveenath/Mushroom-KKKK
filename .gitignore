@@ -7,9 +7,6 @@ env/
 __pycache__/
 *.pyc
 
-# Database files
-*.db
-mushroom_client.db
 
 # Datasets and logs
 *.csv
