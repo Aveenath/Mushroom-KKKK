@@ -1,16 +1,20 @@
+import os
 import requests
 import pandas as pd
 from io import StringIO
 import datetime
 import sqlite3
+from dotenv import load_dotenv
+
+load_dotenv()
 
 LOGIN_URL = "https://didikhub.com/smartsense/auth/login.php"
 DATA_URL = "https://didikhub.com/smartsense/pages/data.php"
 DB_NAME = "mushroom_client.db"
 
 CREDENTIALS = {
-    "username": "visitor",
-    "password": "viewonly"
+    "username": os.getenv("DIDIKHUB_USERNAME"),
+    "password": os.getenv("DIDIKHUB_PASSWORD")
 }
 
 COLUMN_MAP = {
