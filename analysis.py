@@ -1,7 +1,7 @@
 import pandas as pd
 import os
-import sqlite3
 import joblib
+from utils import get_db_connection, db_read_sql
 
 
 def _prepare_df(df):
@@ -76,8 +76,8 @@ def _predict_future(bundle, last_ts, hours=168):
 def get_predictions(df=None):
     """Temperature-only forecast — keeps monitor.py working unchanged."""
     if df is None:
-        conn = sqlite3.connect('mushroom_client.db')
-        df = pd.read_sql("SELECT ts, temp FROM sensors", conn)
+        conn = get_db_connection()
+        df = db_read_sql("SELECT ts, temp FROM sensors", conn)
         conn.close()
 
     features = ['hour', 'day_of_week', 'day_of_month', 'is_weekend']
@@ -90,8 +90,8 @@ def get_predictions(df=None):
 def get_predictions_multi(df=None):
     """Forecast for temp, humidity, and co2 — used by expanded monitor charts."""
     if df is None:
-        conn = sqlite3.connect('mushroom_client.db')
-        df = pd.read_sql("SELECT ts, temp, humidity, co2 FROM sensors", conn)
+        conn = get_db_connection()
+        df = db_read_sql("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
 
     features = ['hour', 'day_of_week', 'day_of_month', 'is_weekend']

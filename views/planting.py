@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import re
-from utils import get_db_connection, get_local_now
+from utils import get_db_connection, get_local_now, db_read_sql
 
 
 def _validate_and_normalize(block_id):
@@ -47,10 +47,9 @@ def _get_status(next_harvest_date):
         return f"In {days_left} days", days_left
 
 
-def show():
-    st.title("🌱 Harvest Schedule Manager")
-
-    # Add new columns to existing table if not yet present
+@st.cache_resource
+def _ensure_planting_columns():
+    # Add new columns to existing table if not yet present (runs once per app process)
     conn = get_db_connection()
     for alter_sql in [
         "ALTER TABLE planting_records ADD COLUMN harvest_count INTEGER DEFAULT 0",
@@ -63,6 +62,13 @@ def show():
         except Exception:
             pass
     conn.close()
+    return True
+
+
+def show():
+    st.title("🌱 Harvest Schedule Manager")
+
+    _ensure_planting_columns()
 
     # --- SEARCH ---
     st.subheader("🔍 Search Block")
@@ -73,7 +79,7 @@ def show():
             st.error(err)
         else:
             conn = get_db_connection()
-            result = pd.read_sql(
+            result = db_read_sql(
                 "SELECT * FROM planting_records WHERE block_id = ? AND username = ?",
                 conn, params=(norm_id, st.session_state.username)
             )
@@ -156,7 +162,7 @@ def show():
     # --- MARK AS HARVESTED / RETIRE ---
     st.subheader("✅ Mark Block as Harvested")
     conn = get_db_connection()
-    active_blocks_df = pd.read_sql(
+    active_blocks_df = db_read_sql(
         "SELECT block_id FROM planting_records WHERE username = ? AND (retired = 0 OR retired IS NULL) ORDER BY block_id",
         conn, params=(st.session_state.username,)
     )
@@ -170,7 +176,7 @@ def show():
 
             if st.form_submit_button("✅ Confirm"):
                 conn = get_db_connection()
-                row = pd.read_sql(
+                row = db_read_sql(
                     "SELECT rowid, * FROM planting_records WHERE block_id = ? AND username = ? LIMIT 1",
                     conn, params=(selected_block, st.session_state.username)
                 ).iloc[0]
@@ -196,7 +202,7 @@ def show():
     st.subheader("📋 Full Harvest Schedule")
     conn = get_db_connection()
     try:
-        df_all = pd.read_sql(
+        df_all = db_read_sql(
             "SELECT * FROM planting_records WHERE username = ? ORDER BY block_id",
             conn, params=(st.session_state.username,)
         )

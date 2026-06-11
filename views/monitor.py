@@ -4,7 +4,7 @@ import datetime
 import requests
 import plotly.express as px
 from analysis import get_predictions_multi
-from utils import get_db_connection, get_local_now
+from utils import get_db_connection, get_local_now, db_read_sql
 from sync_live_data import fetch_live_data, sync_to_db
 
 
@@ -25,7 +25,7 @@ def show():
         st.caption("⚠️ Could not reach SmartSense live data — showing last saved readings.")
 
     conn = get_db_connection()
-    df = pd.read_sql("SELECT * FROM sensors ORDER BY ts DESC LIMIT 1440", conn)
+    df = db_read_sql("SELECT * FROM sensors ORDER BY ts DESC LIMIT 1440", conn)
     conn.close()
 
     st.subheader("🏠 Internal Farm Sensors")

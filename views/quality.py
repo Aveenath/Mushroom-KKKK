@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import re
-from utils import get_db_connection
+from utils import get_db_connection, db_read_sql
 
 
 def _clean_status(val):
@@ -25,7 +25,7 @@ def show():
     st.title("📈 Quality & Disease Analysis")
 
     conn = get_db_connection()
-    reports_df = pd.read_sql(
+    reports_df = db_read_sql(
         "SELECT date, block_id, section_id, status, quality, disease_noted, notes FROM situation_reports WHERE username = ? ORDER BY date DESC",
         conn, params=(st.session_state.username,)
     )

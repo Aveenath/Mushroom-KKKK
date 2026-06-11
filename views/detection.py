@@ -3,7 +3,7 @@ import pandas as pd
 import time
 from PIL import Image
 from ultralytics import YOLO
-from utils import get_db_connection, get_local_now
+from utils import get_db_connection, get_local_now, db_read_sql
 
 try:
     import av
@@ -173,7 +173,7 @@ def show():
     with col_side:
         st.subheader("📋 Persistent Harvest Log")
         conn_view = get_db_connection()
-        df_log = pd.read_sql(
+        df_log = db_read_sql(
             "SELECT * FROM ai_harvest_logs WHERE username = ? ORDER BY timestamp DESC",
             conn_view, params=(st.session_state.username,)
         )
