@@ -5,10 +5,24 @@ import requests
 import plotly.express as px
 from analysis import get_predictions_multi
 from utils import get_db_connection, get_local_now
+from sync_live_data import fetch_live_data, sync_to_db
+
+
+@st.cache_data(ttl=60)
+def sync_live_sensor_data():
+    df = fetch_live_data()
+    return sync_to_db(df)
 
 
 def show():
     st.title("📊 Monitoring & AI Forecasting")
+
+    try:
+        new_count = sync_live_sensor_data()
+        if new_count > 0:
+            st.toast(f"🔄 Synced {new_count} new reading(s) from SmartSense", icon="✅")
+    except Exception:
+        st.caption("⚠️ Could not reach SmartSense live data — showing last saved readings.")
 
     conn = get_db_connection()
     df = pd.read_sql("SELECT * FROM sensors ORDER BY ts DESC LIMIT 1440", conn)
@@ -71,41 +85,41 @@ def show():
 
     st.markdown("---")
     st.subheader("🔮 7-Day Predictive Forecast")
-    st.write("Uses pre-trained AI models to forecast Temperature, Humidity, and CO2 for the next 7 days.")
-    uploaded_csv = st.file_uploader("📂 Upload Sensor CSV (Optional)", type=['csv'])
+    st.write("Uses pre-trained AI models to forecast Temperature, Humidity, and CO2 for the next 7 days, based on live synced sensor data.")
+    st.caption(f"📡 Using {len(df)} live readings — latest: {df['ts'].iloc[0]}")
+    uploaded_csv = st.file_uploader("📂 Upload Sensor CSV (Optional — overrides live data)", type=['csv'])
 
     if st.button("🔄 Run AI Forecast", type="primary"):
-        if uploaded_csv is None:
-            st.warning("⚠️ Please upload a sensor CSV file first before running the forecast.")
-            st.stop()
-
         with st.spinner('Loading AI models and generating forecast...'):
-            df_upload = None
+            df_forecast = df
 
-            try:
-                df_raw = pd.read_csv(uploaded_csv)
-                col_lower = {c: str(c).lower() for c in df_raw.columns}
-                ts_col   = next((c for c, l in col_lower.items() if 'timestamp' in l or 'ts' == l), None)
-                temp_col = next((c for c, l in col_lower.items() if 'temp' in l), None)
-                hum_col  = next((c for c, l in col_lower.items() if 'rh' in l or 'humid' in l), None)
-                co2_col  = next((c for c, l in col_lower.items() if 'co2' in l), None)
-
-                if ts_col and temp_col:
-                    keep = {ts_col: 'ts', temp_col: 'temp'}
-                    if hum_col: keep[hum_col] = 'humidity'
-                    if co2_col: keep[co2_col] = 'co2'
-                    df_upload = df_raw[list(keep.keys())].rename(columns=keep)
-                    df_upload['temp'] = pd.to_numeric(df_upload['temp'], errors='coerce')
-                    df_upload = df_upload.dropna(subset=['temp'])
-                    st.success("Successfully loaded data from uploaded CSV!")
-                else:
-                    st.error("Uploaded CSV must contain Timestamp and Temperature columns.")
-            except Exception as e:
-                st.error(f"Error reading CSV: {e}")
-
-            if df_upload is not None and not df_upload.empty:
+            if uploaded_csv is not None:
                 try:
-                    multi = get_predictions_multi(df_upload)
+                    df_raw = pd.read_csv(uploaded_csv)
+                    col_lower = {c: str(c).lower() for c in df_raw.columns}
+                    ts_col   = next((c for c, l in col_lower.items() if 'timestamp' in l or 'ts' == l), None)
+                    temp_col = next((c for c, l in col_lower.items() if 'temp' in l), None)
+                    hum_col  = next((c for c, l in col_lower.items() if 'rh' in l or 'humid' in l), None)
+                    co2_col  = next((c for c, l in col_lower.items() if 'co2' in l), None)
+
+                    if ts_col and temp_col:
+                        keep = {ts_col: 'ts', temp_col: 'temp'}
+                        if hum_col: keep[hum_col] = 'humidity'
+                        if co2_col: keep[co2_col] = 'co2'
+                        df_forecast = df_raw[list(keep.keys())].rename(columns=keep)
+                        df_forecast['temp'] = pd.to_numeric(df_forecast['temp'], errors='coerce')
+                        df_forecast = df_forecast.dropna(subset=['temp'])
+                        st.success("Successfully loaded data from uploaded CSV!")
+                    else:
+                        st.error("Uploaded CSV must contain Timestamp and Temperature columns.")
+                        df_forecast = None
+                except Exception as e:
+                    st.error(f"Error reading CSV: {e}")
+                    df_forecast = None
+
+            if df_forecast is not None and not df_forecast.empty:
+                try:
+                    multi = get_predictions_multi(df_forecast)
                     future_times = [get_local_now() + datetime.timedelta(hours=i) for i in range(1, 169)]
 
                     # --- Metrics row ---
