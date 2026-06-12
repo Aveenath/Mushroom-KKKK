@@ -1,128 +1,221 @@
 import pandas as pd
+import numpy as np
 import os
+import sqlite3
 import joblib
-from utils import get_db_connection, db_read_sql
+from utils import get_db_connection
 
 
-def _prepare_df(df):
+def _add_temporal(df):
     df = df.copy()
-    df['ts'] = pd.to_datetime(df['ts'])
+    df['ts']           = pd.to_datetime(df['ts'])
     df['hour']         = df['ts'].dt.hour
     df['day_of_week']  = df['ts'].dt.dayofweek
     df['day_of_month'] = df['ts'].dt.day
+    df['month']        = df['ts'].dt.month
     df['is_weekend']   = df['day_of_week'].isin([5, 6]).astype(int)
+    df['hour_sin']     = np.sin(2 * np.pi * df['ts'].dt.hour / 24)
+    df['hour_cos']     = np.cos(2 * np.pi * df['ts'].dt.hour / 24)
+    df['dow_sin']      = np.sin(2 * np.pi * df['ts'].dt.dayofweek / 7)
+    df['dow_cos']      = np.cos(2 * np.pi * df['ts'].dt.dayofweek / 7)
+    df['month_sin']    = np.sin(2 * np.pi * df['ts'].dt.month / 12)
+    df['month_cos']    = np.cos(2 * np.pi * df['ts'].dt.month / 12)
     return df
 
 
-def _load_or_train(target, df, features):
-    pkl_path = f'model_{target}.pkl'
-    if os.path.exists(pkl_path):
-        return joblib.load(pkl_path)
+def _get_metrics(bundle):
+    if 'metrics' in bundle:
+        return bundle['metrics'].get('r2', 0.0), bundle['metrics'].get('mae', 0.0)
+    return bundle.get('r2', 0.0), bundle.get('mae', 0.0)
 
-    # Fallback: train from scratch if .pkl not found
+
+def _engineer_on_rolling(df, RPH):
+    df = df.copy()
+    for t in ['temp', 'humidity', 'co2']:
+        if t not in df.columns:
+            continue
+        for label, shift in [('1h',  RPH),    ('2h',  RPH*2),
+                              ('3h',  RPH*3),  ('6h',  RPH*6),
+                              ('12h', RPH*12), ('1d',  RPH*24),
+                              ('2d',  RPH*48), ('3d',  RPH*72),
+                              ('7d',  RPH*168)]:
+            df[f'{t}_lag_{label}'] = df[t].shift(shift)
+
+        for label, w in [('1h',  RPH),   ('3h',  RPH*3),
+                         ('6h',  RPH*6), ('12h', RPH*12), ('24h', RPH*24)]:
+            df[f'{t}_rolling_{label}']     = df[t].rolling(w, min_periods=1).mean()
+            df[f'{t}_rolling_std_{label}'] = df[t].rolling(w, min_periods=1).std()
+            df[f'{t}_rolling_min_{label}'] = df[t].rolling(w, min_periods=1).min()
+            df[f'{t}_rolling_max_{label}'] = df[t].rolling(w, min_periods=1).max()
+
+        df[f'{t}_diff_1h'] = df[t].diff(RPH)
+        df[f'{t}_diff_6h'] = df[t].diff(RPH * 6)
+        df[f'{t}_diff_1d'] = df[t].diff(RPH * 24)
+        df[f'{t}_accel']   = df[t].diff(RPH).diff(RPH)
+
+    if {'temp', 'humidity'}.issubset(df.columns):
+        df['heat_index']          = df['temp'] * df['humidity'] / 100
+        df['temp_humidity_ratio'] = df['temp'] / (df['humidity'] + 1)
+        df['vpd'] = (1 - df['humidity'] / 100) * 0.6108 * np.exp(
+                        17.27 * df['temp'] / (df['temp'] + 237.3))
+
+    if {'temp', 'co2'}.issubset(df.columns):
+        df['temp_co2_interaction'] = df['temp'] * df['co2'] / 1000
+
+    if {'humidity', 'co2'}.issubset(df.columns):
+        df['humidity_co2_ratio'] = df['humidity'] / (df['co2'] + 1) * 100
+
+    return df
+
+
+def _fallback_train(target, df):
     from sklearn.ensemble import RandomForestRegressor
-    from sklearn.feature_selection import SelectKBest, f_regression, RFE
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import r2_score, mean_absolute_error
+    from sklearn.feature_selection import SelectKBest, f_regression
+
+    df = _add_temporal(df)
+    features = ['hour', 'day_of_week', 'day_of_month', 'month', 'is_weekend',
+                'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos']
+    features = [f for f in features if f in df.columns]
 
     subset = df[features + [target]].dropna()
-    X = subset[features]
-    y = subset[target]
+    X, y   = subset[features], subset[target]
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, shuffle=False)
 
-    filter_sel = SelectKBest(score_func=f_regression, k=min(3, len(features)))
-    X_filtered = filter_sel.fit_transform(X, y)
-    filtered_feats = [features[i] for i in range(len(features)) if filter_sel.get_support()[i]]
-
-    rfe_sel = RFE(
-        estimator=RandomForestRegressor(n_estimators=20, random_state=42),
-        n_features_to_select=min(2, len(filtered_feats))
-    )
-    X_final = rfe_sel.fit_transform(X_filtered, y)
-    final_feats = [filtered_feats[i] for i in range(len(filtered_feats)) if rfe_sel.get_support()[i]]
-
-    X_train, X_test, y_train, y_test = train_test_split(X_final, y, test_size=0.2, random_state=42)
-    model = RandomForestRegressor(n_estimators=50, random_state=42)
+    model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
     model.fit(X_train, y_train)
 
+    selector = SelectKBest(f_regression, k=len(features))
+    selector.fit(X_train, y_train)
+
     return {
-        'model': model,
-        'filter_selector': filter_sel,
-        'rfe_selector': rfe_sel,
-        'features': features,
-        'final_features': final_feats,
-        'r2': r2_score(y_test, model.predict(X_test)),
-        'mae': mean_absolute_error(y_test, model.predict(X_test))
+        'model':             model,
+        'selector':          selector,
+        'selected_features': features,
+        'safe_features':     features,
+        'all_features':      features,
+        'target':            target,
+        'RPH':               1,
+        'metrics': {
+            'r2':  r2_score(y_test, model.predict(X_test)),
+            'mae': mean_absolute_error(y_test, model.predict(X_test)),
+        },
     }
 
 
-def _predict_future(bundle, last_ts, hours=168):
-    features   = bundle['features']
-    filter_sel = bundle['filter_selector']
-    rfe_sel    = bundle['rfe_selector']
-    model      = bundle['model']
+def _predict_future(bundle, history_df, hours=168):
+    model             = bundle['model']
+    selector          = bundle['selector']
+    safe_features     = bundle['safe_features']
+    selected_features = bundle['selected_features']
+    RPH               = bundle.get('RPH', 1)
+    target            = bundle['target']
 
-    future_times = [last_ts + pd.Timedelta(hours=i) for i in range(1, hours + 1)]
-    future = pd.DataFrame({'ts': future_times})
-    future['hour']         = future['ts'].dt.hour
-    future['day_of_week']  = future['ts'].dt.dayofweek
-    future['day_of_month'] = future['ts'].dt.day
-    future['is_weekend']   = future['day_of_week'].isin([5, 6]).astype(int)
+    # Only keep the tail we need for the longest lag (7 days)
+    max_lag_rows = RPH * 168 + 10
+    working = history_df[['ts', 'temp', 'humidity', 'co2']].copy()
+    working = _add_temporal(working)
+    working = working.tail(max_lag_rows).reset_index(drop=True)
 
-    X_f     = filter_sel.transform(future[features])
-    X_final = rfe_sel.transform(X_f)
-    return model.predict(X_final)
+    last_ts = working['ts'].max()
 
+    # Clamp ranges from real history to prevent drift
+    clamp = {}
+    for col in ['temp', 'humidity', 'co2']:
+        if col not in history_df.columns:
+            continue
+        if col == 'humidity':
+            clamp[col] = (70.0, 100.0)
+        else:
+            clamp[col] = (
+                history_df[col].quantile(0.02),
+                history_df[col].quantile(0.98)
+            )
+
+    predictions = []
+    for h in range(1, hours + 1):
+        next_ts = last_ts + pd.Timedelta(hours=h)
+
+        row = pd.DataFrame({'ts': [next_ts]})
+        row = _add_temporal(row)
+        for col in ['temp', 'humidity', 'co2']:
+            row[col] = working[col].iloc[-1]
+
+        extended = pd.concat([working, row], ignore_index=True)
+        engineered = _engineer_on_rolling(extended, RPH)
+
+        if engineered.empty:
+            predictions.append(np.nan)
+            continue
+
+        last_row = engineered.iloc[[-1]].copy()
+        for m in [f for f in safe_features if f not in last_row.columns]:
+            last_row[m] = 0.0
+
+        try:
+            X_input = last_row[selected_features].values
+            pred    = model.predict(X_input)[0]
+        except Exception:
+            pred = working[target].iloc[-RPH:].mean()
+
+        # Clamp to historical range to prevent multi-step drift
+        if target in clamp:
+            lo, hi = clamp[target]
+            pred = float(np.clip(pred, lo, hi))
+
+        predictions.append(pred)
+        extended.at[extended.index[-1], target] = pred
+        working = extended.tail(max_lag_rows).reset_index(drop=True)
+
+    return np.array(predictions)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# PUBLIC API
+# ─────────────────────────────────────────────────────────────────────
 
 def get_predictions(df=None):
-    """Temperature-only forecast — keeps monitor.py working unchanged."""
+    """Temperature-only forecast — backward compatible with monitor.py."""
     if df is None:
         conn = get_db_connection()
-        df = db_read_sql("SELECT ts, temp FROM sensors", conn)
+        df = pd.read_sql_query("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
 
-    features = ['hour', 'day_of_week', 'day_of_month', 'is_weekend']
-    df = _prepare_df(df)
-    bundle = _load_or_train('temp', df, features)
-    preds  = _predict_future(bundle, df['ts'].max())
-    return preds, bundle['r2'], bundle['mae']
+    bundle  = joblib.load('model_temp.pkl') if os.path.exists('model_temp.pkl') \
+              else _fallback_train('temp', df)
+    r2, mae = _get_metrics(bundle)
+    preds   = _predict_future(bundle, df, hours=168)
+    return preds, r2, mae
 
 
 def get_predictions_multi(df=None):
-    """Forecast for temp, humidity, and co2 — used by expanded monitor charts."""
+    """Forecast for temp, humidity, co2 — used by 7-Day Forecast section."""
     if df is None:
         conn = get_db_connection()
-        df = db_read_sql("SELECT ts, temp, humidity, co2 FROM sensors", conn)
+        df   = pd.read_sql_query("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
-
-    features = ['hour', 'day_of_week', 'day_of_month', 'is_weekend']
-    df = _prepare_df(df)
-    last_ts = df['ts'].max()
 
     result = {}
     for target in ['temp', 'humidity', 'co2']:
         pkl_path = f'model_{target}.pkl'
-        if os.path.exists(pkl_path):
-            # Pre-trained model exists — load directly, only needs last_ts
-            bundle = joblib.load(pkl_path)
-            result[target] = {
-                'predictions': _predict_future(bundle, last_ts),
-                'r2': bundle['r2'],
-                'mae': bundle['mae']
-            }
-        elif target in df.columns:
-            # No pkl — train from scratch using df columns
-            bundle = _load_or_train(target, df, features)
-            result[target] = {
-                'predictions': _predict_future(bundle, last_ts),
-                'r2': bundle['r2'],
-                'mae': bundle['mae']
-            }
+        bundle   = joblib.load(pkl_path) if os.path.exists(pkl_path) \
+                   else (_fallback_train(target, df) if target in df.columns else None)
+        if bundle is None:
+            continue
+
+        r2, mae = _get_metrics(bundle)
+        preds   = _predict_future(bundle, df, hours=168)
+        result[target] = {'predictions': preds, 'r2': r2, 'mae': mae}
+
     return result
 
 
 def predict_harvest_date(plant_date_str):
     import datetime
-    plant_date   = datetime.datetime.strptime(plant_date_str, "%Y-%m-%d").date()
+    plant_date    = datetime.datetime.strptime(plant_date_str, "%Y-%m-%d").date()
     early_harvest = plant_date + datetime.timedelta(days=21)
     late_harvest  = plant_date + datetime.timedelta(days=28)
-    return f"{early_harvest.strftime('%b %d, %Y')} to {late_harvest.strftime('%b %d, %Y')}"
+    return (f"{early_harvest.strftime('%b %d, %Y')} "
+            f"to {late_harvest.strftime('%b %d, %Y')}")

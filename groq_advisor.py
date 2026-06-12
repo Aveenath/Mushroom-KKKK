@@ -1,9 +1,9 @@
 import os
+import sqlite3
 import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from groq import Groq
-from utils import get_db_connection
 
 # Explicitly load .env from the project root folder
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
@@ -16,7 +16,7 @@ def get_harvest_advice(username):
         return None, "GROQ_API_KEY not found in .env file."
 
     # --- Latest sensor reading ---
-    conn = get_db_connection()
+    conn = sqlite3.connect('mushroom_client.db')
     try:
         sensor = conn.execute(
             "SELECT temp, humidity, co2 FROM sensors ORDER BY ts DESC LIMIT 1"
