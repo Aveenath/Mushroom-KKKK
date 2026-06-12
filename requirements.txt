@@ -14,4 +14,3 @@ av
 joblib
 groq
 python-dotenv
-libsql-client
