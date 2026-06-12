@@ -25,12 +25,16 @@ def show():
         st.caption("⚠️ Could not reach SmartSense live data — showing last saved readings.")
 
     conn = get_db_connection()
-    df = pd.read_sql("SELECT * FROM sensors ORDER BY ts DESC LIMIT 1440", conn)
+    df = pd.read_sql("""
+    SELECT ts, temp, humidity, co2 FROM (
+        SELECT ts, temp, humidity, co2 FROM sensors ORDER BY ts DESC LIMIT 40000
+    ) sub ORDER BY ts ASC
+    """, conn)
     conn.close()
 
     st.subheader("🏠 Internal Farm Sensors")
     col1, col2, col3 = st.columns(3)
-    latest = df.iloc[0]
+    latest = df.iloc[-1]
 
     if latest['temp'] >= 29:
         st.error(f"🚨 **CRITICAL ALERT:** Internal temperature is {latest['temp']}°C (Exceeds 29°C)! Activate cooling systems immediately.")
@@ -86,12 +90,12 @@ def show():
     st.markdown("---")
     st.subheader("🔮 7-Day Predictive Forecast")
     st.write("Uses pre-trained AI models to forecast Temperature, Humidity, and CO2 for the next 7 days, based on live synced sensor data.")
-    st.caption(f"📡 Using {len(df)} live readings — latest: {df['ts'].iloc[0]}")
+    st.caption(f"📡 Using {len(df)} live readings — latest: {df['ts'].iloc[-1]}")
     uploaded_csv = st.file_uploader("📂 Upload Sensor CSV (Optional — overrides live data)", type=['csv'])
 
     if st.button("🔄 Run AI Forecast", type="primary"):
         with st.spinner('Loading AI models and generating forecast...'):
-            df_forecast = df
+            df_forecast = df.copy()
 
             if uploaded_csv is not None:
                 try:
