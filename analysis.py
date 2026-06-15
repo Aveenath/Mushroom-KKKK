@@ -191,11 +191,14 @@ def get_predictions(df=None):
 
 
 def get_predictions_multi(df=None):
-    """Forecast for temp, humidity, co2 — used by 7-Day Forecast section."""
     if df is None:
         conn = get_db_connection()
         df   = pd.read_sql_query("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
+
+    for col in ['temp', 'humidity', 'co2']:
+        if col in df.columns:
+            df[col] = df[col].astype(float)
 
     result = {}
     for target in ['temp', 'humidity', 'co2']:
