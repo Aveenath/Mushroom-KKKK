@@ -127,7 +127,7 @@ def _predict_future(bundle, history_df, hours=168):
         if col not in history_df.columns:
             continue
         if col == 'humidity':
-            clamp[col] = (70.0, 100.0)
+            clamp[col] = (50.0, 100.0)
         else:
             clamp[col] = (
                 history_df[col].quantile(0.02),
