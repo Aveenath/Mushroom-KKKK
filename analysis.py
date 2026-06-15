@@ -127,7 +127,7 @@ def _predict_future(bundle, history_df, hours=168):
         if col not in history_df.columns:
             continue
         if col == 'humidity':
-            clamp[col] = (70.0, 100.0)
+            clamp[col] = (50.0, 100.0)
         else:
             clamp[col] = (
                 history_df[col].quantile(0.02),
@@ -191,11 +191,14 @@ def get_predictions(df=None):
 
 
 def get_predictions_multi(df=None):
-    """Forecast for temp, humidity, co2 — used by 7-Day Forecast section."""
     if df is None:
         conn = get_db_connection()
         df   = pd.read_sql_query("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
+
+    for col in ['temp', 'humidity', 'co2']:
+        if col in df.columns:
+            df[col] = df[col].astype(float)
 
     result = {}
     for target in ['temp', 'humidity', 'co2']:
