@@ -27,11 +27,24 @@ def get_monitor_advice(username=None):
 
     conn = sqlite3.connect(DB_PATH)
 
-    # ── 1. Latest sensor reading ──────────────────────────────────────────────
+    # ── 1. Sensor reading — 15-minute average for stable equipment decisions ──
+    # Single-minute readings can flicker; averaging last 15 rows gives a
+    # more stable signal for mist ON/OFF control.
     try:
-        latest = conn.execute(
-            "SELECT temp, humidity, co2, ts FROM sensors ORDER BY ts DESC LIMIT 1"
-        ).fetchone()
+        rows = conn.execute(
+            "SELECT temp, humidity, co2 FROM sensors ORDER BY ts DESC LIMIT 15"
+        ).fetchall()
+        if rows:
+            temp     = round(sum(r[0] for r in rows) / len(rows), 1)
+            humidity = round(sum(r[1] for r in rows) / len(rows), 1)
+            co2      = round(sum(r[2] for r in rows) / len(rows), 0)
+            ts_row   = conn.execute(
+                "SELECT ts FROM sensors ORDER BY ts DESC LIMIT 1"
+            ).fetchone()
+            ts = ts_row[0] if ts_row else "unknown"
+            latest = (temp, humidity, co2, ts)
+        else:
+            latest = None
     except Exception:
         latest = None
     finally:
@@ -47,17 +60,15 @@ def get_monitor_advice(username=None):
         f"Temperature : {temp}°C\n"
         f"Humidity    : {humidity}%\n"
         f"CO2         : {co2} ppm\n"
-        f"Recorded at : {ts}"
+        f"Averaged at : {ts} (15-minute average)"
     )
 
-    # ── 2. Pre-evaluate conditions so Groq has clear context ─────────────────
-    temp_status   = "CRITICAL (above 30°C)" if float(temp) > 30 else "NORMAL"
-    humid_status  = "LOW (below 80%)" if float(humidity) < 80 else ("HIGH (above 90%)" if float(humidity) > 90 else "NORMAL (80-90%)")
-    co2_status    = "HIGH (above 800 ppm)" if float(co2) > 800 else "NORMAL"
+    temp_status  = "CRITICAL (above 30°C)" if float(temp) > 30 else "NORMAL"
+    humid_status = "LOW (below 80%)" if float(humidity) < 80 else ("HIGH (above 90%)" if float(humidity) > 90 else "NORMAL (80-90%)")
+    co2_status   = "HIGH (above 800 ppm)" if float(co2) > 800 else "NORMAL"
 
-    fan_trigger   = float(temp) > 30 or float(co2) > 800
-    mist_trigger  = float(humidity) < 80
-    mist_off      = float(humidity) >= 90
+    mist_trigger = float(humidity) < 80
+    mist_off     = float(humidity) >= 90
 
     prompt = f"""You are an expert grey oyster mushroom farm advisor responsible for equipment control.
 

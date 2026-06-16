@@ -28,12 +28,25 @@ def get_harvest_advice(username):
 
     conn = sqlite3.connect(DB_PATH)
 
-    # ── 1. Latest sensor reading ──────────────────────────────────────────────
+    # ── 1. Sensor history — hourly averages over last 24 hours ───────────────
+    # Sensors log every minute — grouping by hour removes noise and makes
+    # trend/streak calculations actually meaningful (hours, not minutes).
     try:
-        latest = conn.execute(
-            "SELECT temp, humidity, co2, ts FROM sensors ORDER BY ts DESC LIMIT 1"
-        ).fetchone()
+        history_rows = conn.execute("""
+            SELECT
+                ROUND(AVG(temp), 1)     AS temp,
+                ROUND(AVG(humidity), 1) AS humidity,
+                ROUND(AVG(co2), 0)      AS co2,
+                strftime('%Y-%m-%d %H:00', ts) AS hour_bucket
+            FROM sensors
+            WHERE ts >= datetime('now', '-24 hours')
+            GROUP BY hour_bucket
+            ORDER BY hour_bucket DESC
+            LIMIT 24
+        """).fetchall()
+        latest = history_rows[0] if history_rows else None
     except Exception:
+        history_rows = []
         latest = None
 
     # ── 2. Active planting records ────────────────────────────────────────────
@@ -55,17 +68,54 @@ def get_harvest_advice(username):
 
     today = datetime.date.today()
 
-    # ── 3. Sensor summary ─────────────────────────────────────────────────────
+    # ── 3. Sensor summary with trend (hourly context) ────────────────────────
     if latest:
         temp, humidity, co2, ts = latest
+        n = len(history_rows)
+
+        # Trend: latest hour vs 6 hours ago — meaningful for grow room conditions
+        ref_6h = history_rows[min(6, n - 1)]
+
+        def _trend(val, ref):
+            diff = val - ref
+            if abs(diff) < 0.5: return "stable ➡️"
+            return "rising 📈" if diff > 0 else "falling 📉"
+
+        co2_trend  = _trend(co2,      ref_6h[2])
+        hum_trend  = _trend(humidity, ref_6h[1])
+        temp_trend = _trend(temp,     ref_6h[0])
+
+        # Streak = how many hours out of last 24 were out of range
+        co2_bad_streak = sum(1 for r in history_rows if r[2] > 800)
+        hum_bad_streak = sum(1 for r in history_rows if r[1] < 80)
+
+        # Peak/worst values across the full 24h window
+        co2_peak  = max(r[2] for r in history_rows)
+        hum_min   = min(r[1] for r in history_rows)
+        temp_peak = max(r[0] for r in history_rows)
+
+        # Compact history table sampled every ~3 hours to keep prompt lean
+        history_lines = ["Hour (avg)           | Temp  | Humidity | CO2"]
+        for i, (t, h, c, bucket) in enumerate(history_rows):
+            if i % 3 == 0 or i == n - 1:
+                history_lines.append(f"  {bucket} | {t}°C | {h}% | {c} ppm")
+        history_text = "\n".join(history_lines)
+
         sensor_text = (
-            f"Temperature : {temp}°C\n"
-            f"Humidity    : {humidity}%\n"
-            f"CO2         : {co2} ppm\n"
-            f"Recorded at : {ts}"
+            f"Latest hourly average (hour ending {ts}):\n"
+            f"  Temperature : {temp}°C  (vs 6h ago: {ref_6h[0]}°C, trend: {temp_trend})"
+            f"  | 24h peak: {temp_peak}°C\n"
+            f"  Humidity    : {humidity}%  (vs 6h ago: {ref_6h[1]}%, trend: {hum_trend})"
+            f"  | 24h low: {hum_min}%"
+            f"  | {hum_bad_streak}/{n} hours below 80%\n"
+            f"  CO2         : {co2} ppm  (vs 6h ago: {ref_6h[2]} ppm, trend: {co2_trend})"
+            f"  | 24h peak: {co2_peak} ppm"
+            f"  | {co2_bad_streak}/{n} hours above 800 ppm\n\n"
+            f"Hourly history (last 24h, sampled every ~3h):\n{history_text}"
         )
     else:
         temp = humidity = co2 = None
+        co2_bad_streak = hum_bad_streak = 0
         sensor_text = "No sensor data available."
 
     # ── 4. Block summary — pre-calculate days elapsed and days remaining ───────
@@ -128,9 +178,14 @@ Each block already has "days_until_harvest" pre-calculated for you based on:
 
 === GROW FACTS ===
 - Optimal : temp 25–30°C, humidity 80–90%, CO2 < 800 ppm
-IMPORTANT — MANDATORY SENSOR ADJUSTMENTS (you MUST apply these):
-- If CO2 > 800 ppm: you MUST subtract 1 from days_until_harvest. Current CO2 is {co2} ppm → SUBTRACT 1 DAY.
-- If humidity < 80%: you MUST add 1 to days_until_harvest. Current humidity is {humidity}%
+
+SENSOR ADJUSTMENTS — apply only if conditions are clearly out of range:
+- If CO2 > 800 ppm  → subtract 1 from days_until_harvest (high CO2 accelerates flushing)
+- If humidity < 80% → add 1 to days_until_harvest (low humidity slows growth)
+- If both conditions apply simultaneously → apply both (net 0 if they cancel out)
+- If conditions are within optimal range → no adjustment needed
+Use the hourly trend and 24h context above to support your reason, but keep the
+adjustment simple: only ±1 day per condition. Do not invent larger adjustments.
 Show the adjusted value in days_until_harvest, not the original.
 
 === YOUR TASKS ===
@@ -179,6 +234,11 @@ Respond in valid JSON only. No text outside the JSON.
         raw_text = response.choices[0].message.content
         result        = json.loads(raw_text)
         result["raw"] = raw_text
+        result["co2_bad_streak"] = co2_bad_streak
+        result["hum_bad_streak"] = hum_bad_streak
+        result["latest_temp"]    = temp
+        result["latest_humidity"]= humidity
+        result["latest_co2"]     = co2
         return result, None
 
     except json.JSONDecodeError:

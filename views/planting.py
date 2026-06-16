@@ -119,19 +119,46 @@ def show():
                 blocks_df["Status"] = blocks_df["category"].map(
                     lambda c: f"{cat_map.get(c, '❓')} {c.replace('_', ' ')}"
                 )
-                display_cols = ["block_id", "days_planted", "est_harvest_date",
-                                "days_until_harvest", "Status", "reason"]
+
+                # ── Fetch official schedule dates from DB for side-by-side compare ──
+                conn = get_db_connection()
+                db_records = pd.read_sql(
+                    "SELECT block_id, planted_date, harvest_count, last_harvest_date "
+                    "FROM planting_records WHERE username = ? AND (retired = 0 OR retired IS NULL)",
+                    conn, params=(st.session_state.username,)
+                )
+                conn.close()
+
+                def _official_date(block_id):
+                    row = db_records[db_records['block_id'] == block_id]
+                    if row.empty:
+                        return "-"
+                    r = row.iloc[0]
+                    hc = int(r.get('harvest_count') or 0)
+                    lhd = r.get('last_harvest_date') or None
+                    return str(_get_next_harvest(r['planted_date'], hc, lhd))
+
+                blocks_df["official_date"] = blocks_df["block_id"].apply(_official_date)
+
+                display_cols = ["block_id", "days_planted", "official_date",
+                                "est_harvest_date", "days_until_harvest", "Status", "reason"]
                 display_cols = [c for c in display_cols if c in blocks_df.columns]
                 st.dataframe(
                     blocks_df[display_cols].rename(columns={
                         "block_id":           "Block",
                         "days_planted":       "Days Grown",
-                        "est_harvest_date":   "Est. Harvest Date",
+                        "official_date":      "📅 Official Date",
+                        "est_harvest_date":   "🤖 AI Adjusted Date",
                         "days_until_harvest": "Days Until Harvest",
                         "reason":             "Reason",
                     }),
                     use_container_width=True,
                     hide_index=True
+                )
+                st.caption(
+                    "ℹ️ **📅 Official Date** = fixed schedule based on planting/harvest records. "
+                    "**🤖 AI Adjusted Date** = estimate only, adjusted for current sensor conditions "
+                    "(CO2, humidity). AI dates do **not** affect your official schedule."
                 )
                 col1, col2, col3, col4 = st.columns(4)
                 counts = blocks_df["category"].value_counts()
