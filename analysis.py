@@ -1,9 +1,8 @@
 import pandas as pd
 import numpy as np
 import os
-import sqlite3
 import joblib
-from utils import get_db_connection
+from utils import get_db_connection, db_read_sql
 
 
 def _add_temporal(df):
@@ -113,15 +112,13 @@ def _predict_future(bundle, history_df, hours=42, step_hours=4):
     RPH               = bundle.get('RPH', 1)
     target            = bundle['target']
 
-    # Only keep the tail we need for the longest lag (7 days) — trim early for speed
     max_lag_rows = RPH * 168 + 10
     working = history_df[['ts', 'temp', 'humidity', 'co2']].copy()
-    working = working.tail(max_lag_rows).reset_index(drop=True)  # trim BEFORE temporal features
+    working = working.tail(max_lag_rows).reset_index(drop=True)
     working = _add_temporal(working)
 
     last_ts = working['ts'].max()
 
-    # Clamp ranges from real history to prevent drift
     clamp = {}
     for col in ['temp', 'humidity', 'co2']:
         if col not in history_df.columns:
@@ -129,14 +126,13 @@ def _predict_future(bundle, history_df, hours=42, step_hours=4):
         lo = history_df[col].quantile(0.02)
         hi = history_df[col].quantile(0.98)
         if col == 'humidity':
-            hi = min(hi, 95.0)  # physical cap, prevents flatline at 100%
+            hi = min(hi, 95.0)
         clamp[col] = (lo, hi)
 
-    # Std dev per target used to add small noise and prevent flatline
     target_std = {}
     for col in ["temp", "humidity", "co2"]:
         if col in history_df.columns:
-            target_std[col] = history_df[col].std() * 0.05  # 5% of std dev
+            target_std[col] = history_df[col].std() * 0.05
 
     predictions = []
     for h in range(1, hours + 1):
@@ -164,12 +160,10 @@ def _predict_future(bundle, history_df, hours=42, step_hours=4):
         except Exception:
             pred = working[target].iloc[-RPH:].mean()
 
-        # Clamp to historical range to prevent multi-step drift
         if target in clamp:
             lo, hi = clamp[target]
             pred = float(np.clip(pred, lo, hi))
 
-        # Add tiny noise to prevent flatline when model saturates
         if target in target_std and target_std[target] > 0:
             pred += float(np.random.normal(0, target_std[target]))
             if target in clamp:
@@ -190,7 +184,8 @@ def get_predictions(df=None):
     """Temperature-only forecast — backward compatible with monitor.py."""
     if df is None:
         conn = get_db_connection()
-        df = pd.read_sql_query("SELECT ts, temp, humidity, co2 FROM sensors", conn)
+        # FIX: use db_read_sql instead of pd.read_sql_query
+        df = db_read_sql("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
 
     bundle  = joblib.load('model_temp.pkl') if os.path.exists('model_temp.pkl') \
@@ -203,7 +198,8 @@ def get_predictions(df=None):
 def get_predictions_multi(df=None):
     if df is None:
         conn = get_db_connection()
-        df   = pd.read_sql_query("SELECT ts, temp, humidity, co2 FROM sensors", conn)
+        # FIX: use db_read_sql instead of pd.read_sql_query
+        df = db_read_sql("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
 
     for col in ['temp', 'humidity', 'co2']:

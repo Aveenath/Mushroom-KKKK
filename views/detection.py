@@ -201,6 +201,3 @@ def show():
                 st.rerun()
         else:
             st.info("No scans recorded yet. Use the scanner to start logging.")
-
-    st.divider()
-    st.caption("Teammate AI UI | YOLO11 | Maturity Model")

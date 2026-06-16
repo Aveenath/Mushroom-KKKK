@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import re
-from utils import get_db_connection, get_local_now
+from utils import get_db_connection, get_local_now, db_read_sql
 
 
 def _validate_and_normalize(block_id):
@@ -67,7 +67,8 @@ def show():
             st.error(err)
         else:
             conn = get_db_connection()
-            result = pd.read_sql(
+            # FIX: use db_read_sql instead of pd.read_sql
+            result = db_read_sql(
                 "SELECT * FROM planting_records WHERE block_id = ? AND username = ?",
                 conn, params=(norm_id, st.session_state.username)
             )
@@ -120,9 +121,9 @@ def show():
                     lambda c: f"{cat_map.get(c, '❓')} {c.replace('_', ' ')}"
                 )
 
-                # ── Fetch official schedule dates from DB for side-by-side compare ──
+                # FIX: use db_read_sql instead of pd.read_sql
                 conn = get_db_connection()
-                db_records = pd.read_sql(
+                db_records = db_read_sql(
                     "SELECT block_id, planted_date, harvest_count, last_harvest_date "
                     "FROM planting_records WHERE username = ? AND (retired = 0 OR retired IS NULL)",
                     conn, params=(st.session_state.username,)
@@ -200,8 +201,9 @@ def show():
                         error_list.append(f"{raw}: {err}")
                         continue
                     conn = get_db_connection()
+                    # FIX: check duplicate using execute/fetchone (no pd.read_sql needed)
                     duplicate = conn.execute(
-                        "SELECT rowid FROM planting_records WHERE block_id = ? AND username = ?",
+                        "SELECT block_id FROM planting_records WHERE block_id = ? AND username = ?",
                         (clean_id, st.session_state.username)
                     ).fetchone()
                     if duplicate:
@@ -231,7 +233,8 @@ def show():
     # --- MARK AS HARVESTED / RETIRE ---
     st.subheader("✅ Mark Block as Harvested")
     conn = get_db_connection()
-    active_blocks_df = pd.read_sql(
+    # FIX: use db_read_sql instead of pd.read_sql
+    active_blocks_df = db_read_sql(
         "SELECT block_id FROM planting_records WHERE username = ? AND (retired = 0 OR retired IS NULL) ORDER BY block_id",
         conn, params=(st.session_state.username,)
     )
@@ -255,14 +258,21 @@ def show():
                     conn = get_db_connection()
                     for selected_block in selected_blocks:
                         try:
-                            row = pd.read_sql(
-                                "SELECT rowid, * FROM planting_records WHERE block_id = ? AND username = ? LIMIT 1",
+                            # FIX: use db_read_sql instead of pd.read_sql
+                            # FIX: removed rowid — UPDATE by block_id + username instead
+                            row_df = db_read_sql(
+                                "SELECT * FROM planting_records WHERE block_id = ? AND username = ? LIMIT 1",
                                 conn, params=(selected_block, st.session_state.username)
-                            ).iloc[0]
+                            )
+                            if row_df.empty:
+                                error_list.append(selected_block)
+                                continue
+                            row = row_df.iloc[0]
                             new_hc = int(row.get('harvest_count') or 0) + 1
+                            # FIX: UPDATE by block_id + username — no rowid needed
                             conn.execute(
-                                "UPDATE planting_records SET harvest_count = ?, last_harvest_date = ?, retired = ? WHERE rowid = ?",
-                                (new_hc, actual_harvest_date.strftime("%Y-%m-%d"), 1 if retire_block else 0, int(row['rowid']))
+                                "UPDATE planting_records SET harvest_count = ?, last_harvest_date = ?, retired = ? WHERE block_id = ? AND username = ?",
+                                (new_hc, actual_harvest_date.strftime("%Y-%m-%d"), 1 if retire_block else 0, selected_block, st.session_state.username)
                             )
                             success_list.append(f"{selected_block} (#{new_hc})")
                         except Exception as e:
@@ -287,7 +297,8 @@ def show():
     st.subheader("📋 Full Harvest Schedule")
     conn = get_db_connection()
     try:
-        df_all = pd.read_sql(
+        # FIX: use db_read_sql instead of pd.read_sql
+        df_all = db_read_sql(
             "SELECT * FROM planting_records WHERE username = ? ORDER BY block_id",
             conn, params=(st.session_state.username,)
         )

@@ -1,14 +1,12 @@
 import os
 import json
-import sqlite3
 import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from groq import Groq
+from utils import get_db_connection
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
-
-DB_PATH = "mushroom_client.db"
 
 
 def get_monitor_advice(username=None):
@@ -25,22 +23,23 @@ def get_monitor_advice(username=None):
     if not api_key:
         return None, "GROQ_API_KEY not found in .env file."
 
-    conn = sqlite3.connect(DB_PATH)
+    # FIX: use get_db_connection() instead of sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
 
     # ── 1. Sensor reading — 15-minute average for stable equipment decisions ──
-    # Single-minute readings can flicker; averaging last 15 rows gives a
-    # more stable signal for mist ON/OFF control.
     try:
-        rows = conn.execute(
+        cur = conn.execute(
             "SELECT temp, humidity, co2 FROM sensors ORDER BY ts DESC LIMIT 15"
-        ).fetchall()
+        )
+        rows = cur.fetchall()
         if rows:
             temp     = round(sum(r[0] for r in rows) / len(rows), 1)
             humidity = round(sum(r[1] for r in rows) / len(rows), 1)
             co2      = round(sum(r[2] for r in rows) / len(rows), 0)
-            ts_row   = conn.execute(
+            ts_cur   = conn.execute(
                 "SELECT ts FROM sensors ORDER BY ts DESC LIMIT 1"
-            ).fetchone()
+            )
+            ts_row = ts_cur.fetchone()
             ts = ts_row[0] if ts_row else "unknown"
             latest = (temp, humidity, co2, ts)
         else:
@@ -111,7 +110,7 @@ Respond in valid JSON only. No text outside the JSON.
   "summary": "overall environment summary here"
 }}"""
 
-    # ── 3. Groq API call ──────────────────────────────────────────────────────
+    # ── 2. Groq API call ──────────────────────────────────────────────────────
     try:
         client   = Groq(api_key=api_key)
         response = client.chat.completions.create(

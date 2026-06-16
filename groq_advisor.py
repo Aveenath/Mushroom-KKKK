@@ -1,14 +1,12 @@
 import os
 import json
-import sqlite3
 import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from groq import Groq
+from utils import get_db_connection, db_read_sql
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
-
-DB_PATH = "mushroom_client.db"
 
 
 def get_harvest_advice(username):
@@ -26,13 +24,12 @@ def get_harvest_advice(username):
     if not api_key:
         return None, "GROQ_API_KEY not found in .env file."
 
-    conn = sqlite3.connect(DB_PATH)
+    # FIX: use get_db_connection() instead of sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
 
     # ── 1. Sensor history — hourly averages over last 24 hours ───────────────
-    # Sensors log every minute — grouping by hour removes noise and makes
-    # trend/streak calculations actually meaningful (hours, not minutes).
     try:
-        history_rows = conn.execute("""
+        history_cur = conn.execute("""
             SELECT
                 ROUND(AVG(temp), 1)     AS temp,
                 ROUND(AVG(humidity), 1) AS humidity,
@@ -43,7 +40,8 @@ def get_harvest_advice(username):
             GROUP BY hour_bucket
             ORDER BY hour_bucket DESC
             LIMIT 24
-        """).fetchall()
+        """)
+        history_rows = history_cur.fetchall()
         latest = history_rows[0] if history_rows else None
     except Exception:
         history_rows = []
@@ -51,16 +49,18 @@ def get_harvest_advice(username):
 
     # ── 2. Active planting records ────────────────────────────────────────────
     try:
-        blocks = conn.execute(
+        blocks_cur = conn.execute(
             """SELECT block_id, planted_date, harvest_count, last_harvest_date
                FROM planting_records
                WHERE username = ? AND (retired = 0 OR retired IS NULL)
                ORDER BY block_id""",
             (username,)
-        ).fetchall()
+        )
+        blocks = blocks_cur.fetchall()
     except Exception:
         blocks = []
     finally:
+        # FIX: close after both queries are done (was closing too early before)
         conn.close()
 
     if not blocks:
@@ -73,7 +73,6 @@ def get_harvest_advice(username):
         temp, humidity, co2, ts = latest
         n = len(history_rows)
 
-        # Trend: latest hour vs 6 hours ago — meaningful for grow room conditions
         ref_6h = history_rows[min(6, n - 1)]
 
         def _trend(val, ref):
@@ -85,16 +84,13 @@ def get_harvest_advice(username):
         hum_trend  = _trend(humidity, ref_6h[1])
         temp_trend = _trend(temp,     ref_6h[0])
 
-        # Streak = how many hours out of last 24 were out of range
         co2_bad_streak = sum(1 for r in history_rows if r[2] > 800)
         hum_bad_streak = sum(1 for r in history_rows if r[1] < 80)
 
-        # Peak/worst values across the full 24h window
         co2_peak  = max(r[2] for r in history_rows)
         hum_min   = min(r[1] for r in history_rows)
         temp_peak = max(r[0] for r in history_rows)
 
-        # Compact history table sampled every ~3 hours to keep prompt lean
         history_lines = ["Hour (avg)           | Temp  | Humidity | CO2"]
         for i, (t, h, c, bucket) in enumerate(history_rows):
             if i % 3 == 0 or i == n - 1:
@@ -118,7 +114,7 @@ def get_harvest_advice(username):
         co2_bad_streak = hum_bad_streak = 0
         sensor_text = "No sensor data available."
 
-    # ── 4. Block summary — pre-calculate days elapsed and days remaining ───────
+    # ── 4. Block summary ──────────────────────────────────────────────────────
     block_lines = []
     for block_id, planted_date, harvest_count, last_harvest_date in blocks:
         hc = int(harvest_count or 0)
@@ -130,12 +126,10 @@ def get_harvest_advice(username):
             days_planted = 0
 
         if hc == 0:
-            # Not yet harvested — target is 14 days from planting
             target_days  = 14
             days_elapsed = days_planted
             reference    = "since planting"
         else:
-            # Already harvested — target is 15 days from last harvest
             target_days  = 15
             try:
                 last         = datetime.date.fromisoformat(last_harvest_date)
@@ -144,7 +138,7 @@ def get_harvest_advice(username):
                 days_elapsed = 0
             reference    = "since last harvest"
 
-        days_remaining = target_days - days_elapsed  # negative = overdue
+        days_remaining = target_days - days_elapsed
 
         if last_harvest_date and hc > 0:
             block_lines.append(
