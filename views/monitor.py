@@ -36,11 +36,6 @@ def show():
     col1, col2, col3 = st.columns(3)
     latest = df.iloc[-1]
 
-    if latest['temp'] >= 29:
-        st.error(f"🚨 **CRITICAL ALERT:** Internal temperature is {latest['temp']}°C (Exceeds 29°C)! Activate cooling systems immediately.")
-    if latest['humidity'] <= 75:
-        st.warning(f"⚠️ **WARNING:** Internal humidity has dropped to {latest['humidity']}% (Below 75%). Misting recommended.")
-
     temp_status = "🟢 Normal" if 24 <= latest['temp'] <= 28 else ("🟡 Warning" if latest['temp'] < 30 else "🔴 Critical")
     hum_status  = "🟢 Normal" if 80 <= latest['humidity'] <= 90 else ("🟡 Warning" if latest['humidity'] >= 75 else "🔴 Critical")
     co2_status  = "🟢 Normal" if latest['co2'] < 1000 else ("🟡 Warning" if latest['co2'] < 1500 else "🔴 Critical")
@@ -48,6 +43,41 @@ def show():
     col1.metric("Internal Temp",     f"{latest['temp']}°C",      temp_status)
     col2.metric("Internal Humidity", f"{latest['humidity']}%",   hum_status)
     col3.metric("Internal CO2",      f"{latest['co2']} ppm",     co2_status)
+
+    # ── AI EQUIPMENT RECOMMENDATION ───────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🤖 AI Equipment Recommendation")
+    st.caption("Auto-updated when sensor readings change.")
+
+    # Cache key based on sensor values — only call Groq when readings change
+    sensor_key = f"{latest['temp']}_{latest['humidity']}_{latest['co2']}"
+
+    if (
+        "monitor_sensor_key" not in st.session_state
+        or st.session_state.monitor_sensor_key != sensor_key
+        or "monitor_result" not in st.session_state
+    ):
+        from groq_monitor import get_monitor_advice
+        result, error = get_monitor_advice()
+        st.session_state.monitor_sensor_key = sensor_key
+        st.session_state.monitor_result     = result
+        st.session_state.monitor_error      = error
+
+    result = st.session_state.get("monitor_result")
+    error  = st.session_state.get("monitor_error")
+
+    if error:
+        st.warning(f"⚠️ AI recommendation unavailable: {error}")
+    elif result:
+        mist = result.get("mist", {})
+
+        mist_status = mist.get("status", "?")
+        mist_color  = "🟢" if mist_status == "OFF" else "🔵"
+        st.markdown(f"### 💧 Mist — {mist_color} **{mist_status}**")
+        st.info(mist.get("reason", ""))
+
+        if result.get("summary"):
+            st.success(f"📋 {result['summary']}")
 
     st.markdown("---")
     st.subheader("🌦️ Outside Weather (Live & Forecast)")
@@ -124,7 +154,7 @@ def show():
             if df_forecast is not None and not df_forecast.empty:
                 try:
                     multi = get_predictions_multi(df_forecast)
-                    future_times = [get_local_now() + datetime.timedelta(hours=i) for i in range(1, 169)]
+                    future_times = [get_local_now() + datetime.timedelta(hours=i * 4) for i in range(1, 43)]
 
                     # --- Metrics row ---
                     labels = {'temp': '🌡️ Temperature', 'humidity': '💧 Humidity', 'co2': '🌿 CO2'}

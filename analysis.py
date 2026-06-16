@@ -105,7 +105,7 @@ def _fallback_train(target, df):
     }
 
 
-def _predict_future(bundle, history_df, hours=168):
+def _predict_future(bundle, history_df, hours=42, step_hours=4):
     model             = bundle['model']
     selector          = bundle['selector']
     safe_features     = bundle['safe_features']
@@ -113,11 +113,11 @@ def _predict_future(bundle, history_df, hours=168):
     RPH               = bundle.get('RPH', 1)
     target            = bundle['target']
 
-    # Only keep the tail we need for the longest lag (7 days)
+    # Only keep the tail we need for the longest lag (7 days) — trim early for speed
     max_lag_rows = RPH * 168 + 10
     working = history_df[['ts', 'temp', 'humidity', 'co2']].copy()
+    working = working.tail(max_lag_rows).reset_index(drop=True)  # trim BEFORE temporal features
     working = _add_temporal(working)
-    working = working.tail(max_lag_rows).reset_index(drop=True)
 
     last_ts = working['ts'].max()
 
@@ -126,17 +126,21 @@ def _predict_future(bundle, history_df, hours=168):
     for col in ['temp', 'humidity', 'co2']:
         if col not in history_df.columns:
             continue
+        lo = history_df[col].quantile(0.02)
+        hi = history_df[col].quantile(0.98)
         if col == 'humidity':
-            clamp[col] = (50.0, 100.0)
-        else:
-            clamp[col] = (
-                history_df[col].quantile(0.02),
-                history_df[col].quantile(0.98)
-            )
+            hi = min(hi, 95.0)  # physical cap, prevents flatline at 100%
+        clamp[col] = (lo, hi)
+
+    # Std dev per target used to add small noise and prevent flatline
+    target_std = {}
+    for col in ["temp", "humidity", "co2"]:
+        if col in history_df.columns:
+            target_std[col] = history_df[col].std() * 0.05  # 5% of std dev
 
     predictions = []
     for h in range(1, hours + 1):
-        next_ts = last_ts + pd.Timedelta(hours=h)
+        next_ts = last_ts + pd.Timedelta(hours=h * step_hours)
 
         row = pd.DataFrame({'ts': [next_ts]})
         row = _add_temporal(row)
@@ -164,6 +168,12 @@ def _predict_future(bundle, history_df, hours=168):
         if target in clamp:
             lo, hi = clamp[target]
             pred = float(np.clip(pred, lo, hi))
+
+        # Add tiny noise to prevent flatline when model saturates
+        if target in target_std and target_std[target] > 0:
+            pred += float(np.random.normal(0, target_std[target]))
+            if target in clamp:
+                pred = float(np.clip(pred, clamp[target][0], clamp[target][1]))
 
         predictions.append(pred)
         extended.at[extended.index[-1], target] = pred
@@ -209,7 +219,7 @@ def get_predictions_multi(df=None):
             continue
 
         r2, mae = _get_metrics(bundle)
-        preds   = _predict_future(bundle, df, hours=168)
+        preds   = _predict_future(bundle, df, hours=42, step_hours=4)
         result[target] = {'predictions': preds, 'r2': r2, 'mae': mae}
 
     return result
