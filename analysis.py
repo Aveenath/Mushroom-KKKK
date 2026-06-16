@@ -1,9 +1,8 @@
 import pandas as pd
 import numpy as np
 import os
-import sqlite3
 import joblib
-from utils import get_db_connection
+from utils import get_db_connection, db_read_sql
 
 
 def _add_temporal(df):
@@ -190,7 +189,7 @@ def get_predictions(df=None):
     """Temperature-only forecast — backward compatible with monitor.py."""
     if df is None:
         conn = get_db_connection()
-        df = pd.read_sql_query("SELECT ts, temp, humidity, co2 FROM sensors", conn)
+        df = db_read_sql("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
 
     bundle  = joblib.load('model_temp.pkl') if os.path.exists('model_temp.pkl') \
@@ -203,7 +202,7 @@ def get_predictions(df=None):
 def get_predictions_multi(df=None):
     if df is None:
         conn = get_db_connection()
-        df   = pd.read_sql_query("SELECT ts, temp, humidity, co2 FROM sensors", conn)
+        df   = db_read_sql("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
 
     for col in ['temp', 'humidity', 'co2']:

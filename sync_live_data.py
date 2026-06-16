@@ -3,14 +3,13 @@ import requests
 import pandas as pd
 from io import StringIO
 import datetime
-import sqlite3
 from dotenv import load_dotenv
+from utils import get_db_connection, db_read_sql, db_to_sql
 
 load_dotenv()
 
 LOGIN_URL = "https://didikhub.com/smartsense/auth/login.php"
 DATA_URL = "https://didikhub.com/smartsense/pages/data.php"
-DB_NAME = "mushroom_client.db"
 
 CREDENTIALS = {
     "username": os.getenv("DIDIKHUB_USERNAME"),
@@ -49,12 +48,12 @@ def fetch_live_data(device_id=1, date_from=None, date_to=None):
 
 
 def sync_to_db(df):
-    conn = sqlite3.connect(DB_NAME)
-    existing_ids = set(pd.read_sql("SELECT id FROM sensors", conn)["id"])
+    conn = get_db_connection()
+    existing_ids = set(db_read_sql("SELECT id FROM sensors", conn)["id"])
     new_rows = df[~df["id"].isin(existing_ids)]
 
     if not new_rows.empty:
-        new_rows.to_sql("sensors", conn, if_exists="append", index=False)
+        db_to_sql(new_rows, "sensors", conn, if_exists="append")
 
     conn.close()
     return len(new_rows)

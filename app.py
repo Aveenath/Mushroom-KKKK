@@ -27,25 +27,32 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- DB SETUP ---
-conn = get_db_connection()
-conn.execute('''CREATE TABLE IF NOT EXISTS situation_reports
-             (date TEXT, status TEXT, disease_noted TEXT, quality TEXT, notes TEXT, username TEXT)''')
-for _col in [
-    "ALTER TABLE situation_reports ADD COLUMN block_id TEXT DEFAULT '-'",
-    "ALTER TABLE situation_reports ADD COLUMN section_id TEXT DEFAULT '-'",
-]:
-    try:
-        conn.execute(_col)
-        conn.commit()
-    except Exception:
-        pass
-conn.execute('''CREATE TABLE IF NOT EXISTS planting_records
-             (block_id TEXT, species TEXT, planted_date TEXT, notes TEXT, predicted_harvest TEXT, username TEXT)''')
-conn.execute('''CREATE TABLE IF NOT EXISTS ai_harvest_logs
-             (timestamp TEXT, filename TEXT, young INTEGER, ready INTEGER, old INTEGER, total_clusters INTEGER, username TEXT)''')
-conn.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT)''')
-conn.close()
+# --- DB SETUP (runs once per app process) ---
+@st.cache_resource
+def _init_db():
+    conn = get_db_connection()
+    conn.execute('''CREATE TABLE IF NOT EXISTS situation_reports
+                 (date TEXT, status TEXT, disease_noted TEXT, quality TEXT, notes TEXT, username TEXT)''')
+    for _col in [
+        "ALTER TABLE situation_reports ADD COLUMN block_id TEXT DEFAULT '-'",
+        "ALTER TABLE situation_reports ADD COLUMN section_id TEXT DEFAULT '-'",
+    ]:
+        try:
+            conn.execute(_col)
+            conn.commit()
+        except Exception:
+            pass
+    conn.execute('''CREATE TABLE IF NOT EXISTS planting_records
+                 (block_id TEXT, species TEXT, planted_date TEXT, notes TEXT, predicted_harvest TEXT, username TEXT)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS ai_harvest_logs
+                 (timestamp TEXT, filename TEXT, young INTEGER, ready INTEGER, old INTEGER, total_clusters INTEGER, username TEXT)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS harvest_history
+                 (block_id TEXT, harvest_number INTEGER, harvest_date TEXT, username TEXT)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT)''')
+    conn.close()
+    return True
+
+_init_db()
 
 # --- AUTH ---
 def hash_password(password):

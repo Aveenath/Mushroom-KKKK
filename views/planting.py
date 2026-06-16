@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import re
-from utils import get_db_connection, get_local_now
+from utils import get_db_connection, get_local_now, db_read_sql
 
 
 def _validate_and_normalize(block_id):
@@ -41,10 +41,9 @@ def _get_status(next_harvest_date):
         return f"In {days_left} days", days_left
 
 
-def show():
-    st.title("🌱 Harvest Schedule Manager")
-
-    # Add new columns to existing table if not yet present
+@st.cache_resource
+def _ensure_planting_columns():
+    # Add new columns to existing table if not yet present (runs once per app process)
     conn = get_db_connection()
     for alter_sql in [
         "ALTER TABLE planting_records ADD COLUMN harvest_count INTEGER DEFAULT 0",
@@ -57,6 +56,13 @@ def show():
         except Exception:
             pass
     conn.close()
+    return True
+
+
+def show():
+    st.title("🌱 Harvest Schedule Manager")
+
+    _ensure_planting_columns()
 
     # --- SEARCH ---
     st.subheader("🔍 Search Block")
@@ -67,7 +73,7 @@ def show():
             st.error(err)
         else:
             conn = get_db_connection()
-            result = pd.read_sql(
+            result = db_read_sql(
                 "SELECT * FROM planting_records WHERE block_id = ? AND username = ?",
                 conn, params=(norm_id, st.session_state.username)
             )
@@ -92,7 +98,23 @@ def show():
                     c4.metric("Next Harvest Date", str(next_date))
                     st.info(f"Status: {status_label}  |  Next interval: {14 if hc == 0 else 15} days")
 
+<<<<<<< HEAD
     # ── AI HARVEST ADVISOR ────────────────────────────────────────────────────
+=======
+                conn = get_db_connection()
+                history_df = db_read_sql(
+                    "SELECT harvest_number AS 'Harvest #', harvest_date AS 'Date' FROM harvest_history WHERE block_id = ? AND username = ? ORDER BY harvest_number",
+                    conn, params=(norm_id, st.session_state.username)
+                )
+                conn.close()
+                if not history_df.empty:
+                    with st.expander(f"📅 Harvest Date History ({len(history_df)} record(s))"):
+                        st.dataframe(history_df, hide_index=True, use_container_width=True)
+                else:
+                    st.caption("No individual harvest dates recorded yet — tracking starts from the next harvest.")
+
+    # --- AI HARVEST ADVISOR ---
+>>>>>>> 5a71666e786a3533ad334fb3731fa349e2e04d19
     st.markdown("---")
     st.subheader("🤖 AI Harvest Advisor")
 
@@ -231,7 +253,7 @@ def show():
     # --- MARK AS HARVESTED / RETIRE ---
     st.subheader("✅ Mark Block as Harvested")
     conn = get_db_connection()
-    active_blocks_df = pd.read_sql(
+    active_blocks_df = db_read_sql(
         "SELECT block_id FROM planting_records WHERE username = ? AND (retired = 0 OR retired IS NULL) ORDER BY block_id",
         conn, params=(st.session_state.username,)
     )
@@ -248,8 +270,31 @@ def show():
             retire_block = st.checkbox("Retire all selected blocks after this harvest")
 
             if st.form_submit_button("✅ Confirm"):
+<<<<<<< HEAD
                 if not selected_blocks:
                     st.warning("Please select at least one block.")
+=======
+                conn = get_db_connection()
+                row = db_read_sql(
+                    "SELECT rowid, * FROM planting_records WHERE block_id = ? AND username = ? LIMIT 1",
+                    conn, params=(selected_block, st.session_state.username)
+                ).iloc[0]
+                new_hc = int(row.get('harvest_count') or 0) + 1
+                next_interval = min(5 + new_hc * 2, 7)
+                harvest_date_str = actual_harvest_date.strftime("%Y-%m-%d")
+                conn.execute(
+                    "UPDATE planting_records SET harvest_count = ?, last_harvest_date = ?, retired = ? WHERE rowid = ?",
+                    (new_hc, harvest_date_str, 1 if retire_block else 0, int(row['rowid']))
+                )
+                conn.execute(
+                    "INSERT INTO harvest_history (block_id, harvest_number, harvest_date, username) VALUES (?, ?, ?, ?)",
+                    (selected_block, new_hc, harvest_date_str, st.session_state.username)
+                )
+                conn.commit()
+                conn.close()
+                if retire_block:
+                    st.success(f"Block **{selected_block}** retired after {new_hc} harvest(s).")
+>>>>>>> 5a71666e786a3533ad334fb3731fa349e2e04d19
                 else:
                     success_list, error_list = [], []
                     conn = get_db_connection()
@@ -287,7 +332,7 @@ def show():
     st.subheader("📋 Full Harvest Schedule")
     conn = get_db_connection()
     try:
-        df_all = pd.read_sql(
+        df_all = db_read_sql(
             "SELECT * FROM planting_records WHERE username = ? ORDER BY block_id",
             conn, params=(st.session_state.username,)
         )
@@ -321,8 +366,51 @@ def show():
 
         schedule_df = pd.DataFrame(schedule_rows).sort_values('Days Left')
 
-        csv_export = schedule_df.drop(columns=['Days Left']).to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Export Schedule to CSV", data=csv_export, file_name="harvest_schedule.csv", mime="text/csv")
+        # --- EXPORT ---
+        st.markdown("##### 📤 Export Data")
+        export_mode = st.radio("Export:", ["Full Schedule", "Harvest History by Block", "Harvest History by Date Range"], horizontal=True)
+
+        if export_mode == "Full Schedule":
+            csv_export = schedule_df.drop(columns=['Days Left']).to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Export to CSV", data=csv_export, file_name="harvest_schedule.csv", mime="text/csv", key="export_schedule_csv")
+        elif export_mode == "Harvest History by Block":
+            conn = get_db_connection()
+            blocks_df = db_read_sql(
+                "SELECT DISTINCT block_id FROM harvest_history WHERE username = ? ORDER BY block_id",
+                conn, params=(st.session_state.username,)
+            )
+            conn.close()
+            if blocks_df.empty:
+                st.info("No harvest history recorded yet.")
+            else:
+                selected_hist_block = st.selectbox("Select Block", blocks_df['block_id'].tolist(), key="export_block_select")
+                conn = get_db_connection()
+                hist_df = db_read_sql(
+                    "SELECT block_id AS 'Block ID', harvest_number AS 'Harvest #', harvest_date AS 'Date' FROM harvest_history WHERE block_id = ? AND username = ? ORDER BY harvest_number",
+                    conn, params=(selected_hist_block, st.session_state.username)
+                )
+                conn.close()
+                st.dataframe(hist_df, hide_index=True, use_container_width=True)
+                csv_hist = hist_df.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Export to CSV", data=csv_hist, file_name=f"harvest_history_{selected_hist_block}.csv", mime="text/csv", key="export_block_csv")
+        else:
+            col1, col2 = st.columns(2)
+            start_date = col1.date_input("From", get_local_now().date() - datetime.timedelta(days=30), key="export_from")
+            end_date = col2.date_input("To", get_local_now().date(), key="export_to")
+            conn = get_db_connection()
+            hist_df = db_read_sql(
+                "SELECT block_id AS 'Block ID', harvest_number AS 'Harvest #', harvest_date AS 'Date' FROM harvest_history WHERE username = ? AND harvest_date BETWEEN ? AND ? ORDER BY harvest_date, block_id",
+                conn, params=(st.session_state.username, start_date.isoformat(), end_date.isoformat())
+            )
+            conn.close()
+            if hist_df.empty:
+                st.info("No harvest records in this date range.")
+            else:
+                st.dataframe(hist_df, hide_index=True, use_container_width=True)
+                csv_hist = hist_df.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Export to CSV", data=csv_hist, file_name=f"harvest_history_{start_date}_{end_date}.csv", mime="text/csv", key="export_date_csv")
+
+        st.markdown("---")
 
         schedule_df.insert(len(schedule_df.columns), "Delete?", False)
 
