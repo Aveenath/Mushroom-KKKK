@@ -4,36 +4,36 @@ import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from groq import Groq
-from utils import get_db_connection, db_read_sql
+from utils import get_db_connection
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
+# ── Thresholds (single source of truth) ───────────────────────────────────────
+TEMP_MIN            = 25.0
+TEMP_OPTIMAL        = 28.0
+TEMP_MAX            = 30.0
+HUMIDITY_MIN        = 80.0
+HUMIDITY_OPT        = 85.0
+HUMIDITY_MAX        = 90.0
+CO2_MAX             = 800.0
+FIRST_HARVEST_DAYS  = 14
+REHARVEST_DAYS      = 15
 
-def get_harvest_advice(username):
-    """
-    Pull latest sensor reading + planting records, send to Groq for
-    harvest recommendations. Returns (advice_dict, error).
 
-    advice_dict keys:
-        blocks : list of {block_id, days_planted, est_harvest_date,
-                          days_until_harvest, category, reason}
-        advice : str  (environment adjustment tips)
-        raw    : str  (full Groq response, fallback display)
-    """
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        return None, "GROQ_API_KEY not found in .env file."
+def _trend_label(current, reference, threshold=0.5):
+    diff = current - reference
+    if abs(diff) < threshold:
+        return "stable ➡️"
+    return "rising 📈" if diff > 0 else "falling 📉"
 
-    # FIX: use get_db_connection() instead of sqlite3.connect(DB_PATH)
-    conn = get_db_connection()
 
-    # ── 1. Sensor history — hourly averages over last 24 hours ───────────────
+def _fetch_sensor_history(conn):
     try:
-        history_cur = conn.execute("""
+        cur = conn.execute("""
             SELECT
-                ROUND(AVG(temp), 1)     AS temp,
+                ROUND(AVG(temp),     1) AS temp,
                 ROUND(AVG(humidity), 1) AS humidity,
-                ROUND(AVG(co2), 0)      AS co2,
+                ROUND(AVG(co2),      0) AS co2,
                 strftime('%Y-%m-%d %H:00', ts) AS hour_bucket
             FROM sensors
             WHERE ts >= datetime('now', '-24 hours')
@@ -41,81 +41,107 @@ def get_harvest_advice(username):
             ORDER BY hour_bucket DESC
             LIMIT 24
         """)
-        history_rows = history_cur.fetchall()
-        latest = history_rows[0] if history_rows else None
+        rows = cur.fetchall()
+        return rows, (rows[0] if rows else None)
     except Exception:
-        history_rows = []
-        latest = None
+        return [], None
 
-    # ── 2. Active planting records ────────────────────────────────────────────
+
+def _fetch_blocks(conn, username):
     try:
-        blocks_cur = conn.execute(
+        cur = conn.execute(
             """SELECT block_id, planted_date, harvest_count, last_harvest_date
                FROM planting_records
                WHERE username = ? AND (retired = 0 OR retired IS NULL)
                ORDER BY block_id""",
             (username,)
         )
-        blocks = blocks_cur.fetchall()
+        return cur.fetchall()
     except Exception:
-        blocks = []
-    finally:
-        # FIX: close after both queries are done (was closing too early before)
-        conn.close()
+        return []
 
-    if not blocks:
-        return None, "No active blocks found. Please record planting data first."
 
-    today = datetime.date.today()
+def _build_sensor_summary(history_rows, latest):
+    if not latest:
+        return "No sensor data available.", {
+            "co2_high": False, "humidity_low": False,
+            "temp_high": False, "temp_low": False,
+            "co2_bad_streak": 0, "hum_bad_streak": 0,
+            "temp": None, "humidity": None, "co2": None,
+        }
 
-    # ── 3. Sensor summary with trend (hourly context) ────────────────────────
-    if latest:
-        temp, humidity, co2, ts = latest
-        n = len(history_rows)
+    temp, humidity, co2, ts = latest
+    n = len(history_rows)
+    ref_6h = history_rows[min(6, n - 1)]
 
-        ref_6h = history_rows[min(6, n - 1)]
+    co2_trend  = _trend_label(co2,      ref_6h[2], threshold=20)
+    hum_trend  = _trend_label(humidity, ref_6h[1], threshold=2)
+    temp_trend = _trend_label(temp,     ref_6h[0], threshold=0.5)
 
-        def _trend(val, ref):
-            diff = val - ref
-            if abs(diff) < 0.5: return "stable ➡️"
-            return "rising 📈" if diff > 0 else "falling 📉"
+    co2_bad_streak = sum(1 for r in history_rows if r[2] > CO2_MAX)
+    hum_bad_streak = sum(1 for r in history_rows if r[1] < HUMIDITY_MIN)
 
-        co2_trend  = _trend(co2,      ref_6h[2])
-        hum_trend  = _trend(humidity, ref_6h[1])
-        temp_trend = _trend(temp,     ref_6h[0])
+    co2_peak   = max(r[2] for r in history_rows)
+    hum_min    = min(r[1] for r in history_rows)
+    temp_peak  = max(r[0] for r in history_rows)
+    temp_min24 = min(r[0] for r in history_rows)
 
-        co2_bad_streak = sum(1 for r in history_rows if r[2] > 800)
-        hum_bad_streak = sum(1 for r in history_rows if r[1] < 80)
+    history_lines = ["Hour (avg)           | Temp  | Humidity | CO2"]
+    for i, (t, h, c, bucket) in enumerate(history_rows):
+        if i % 3 == 0 or i == n - 1:
+            history_lines.append(f"  {bucket} | {t}°C | {h}% | {c} ppm")
 
-        co2_peak  = max(r[2] for r in history_rows)
-        hum_min   = min(r[1] for r in history_rows)
-        temp_peak = max(r[0] for r in history_rows)
+    sensor_text = (
+        f"Latest hourly average (hour ending {ts}):\n"
+        f"  Temperature : {temp}°C  ({temp_trend} vs 6h ago: {ref_6h[0]}°C)"
+        f"  | 24h range: {temp_min24}–{temp_peak}°C\n"
+        f"  Humidity    : {humidity}%  ({hum_trend} vs 6h ago: {ref_6h[1]}%)"
+        f"  | 24h low: {hum_min}%"
+        f"  | {hum_bad_streak}/{n} hours below {HUMIDITY_MIN}%\n"
+        f"  CO2         : {co2} ppm  ({co2_trend} vs 6h ago: {ref_6h[2]} ppm)"
+        f"  | 24h peak: {co2_peak} ppm"
+        f"  | {co2_bad_streak}/{n} hours above {CO2_MAX} ppm\n\n"
+        f"Hourly history (last 24h, sampled every ~3h):\n"
+        + "\n".join(history_lines)
+    )
 
-        history_lines = ["Hour (avg)           | Temp  | Humidity | CO2"]
-        for i, (t, h, c, bucket) in enumerate(history_rows):
-            if i % 3 == 0 or i == n - 1:
-                history_lines.append(f"  {bucket} | {t}°C | {h}% | {c} ppm")
-        history_text = "\n".join(history_lines)
+    flags = {
+        "co2_high":       float(co2)      > CO2_MAX,
+        "humidity_low":   float(humidity) < HUMIDITY_MIN,
+        "humidity_high":  float(humidity) > HUMIDITY_MAX,
+        "temp_high":      float(temp)     > TEMP_MAX,
+        "temp_low":       float(temp)     < TEMP_MIN,
+        "co2_bad_streak": co2_bad_streak,
+        "hum_bad_streak": hum_bad_streak,
+        "temp":     temp,
+        "humidity": humidity,
+        "co2":      co2,
+    }
+    return sensor_text, flags
 
-        sensor_text = (
-            f"Latest hourly average (hour ending {ts}):\n"
-            f"  Temperature : {temp}°C  (vs 6h ago: {ref_6h[0]}°C, trend: {temp_trend})"
-            f"  | 24h peak: {temp_peak}°C\n"
-            f"  Humidity    : {humidity}%  (vs 6h ago: {ref_6h[1]}%, trend: {hum_trend})"
-            f"  | 24h low: {hum_min}%"
-            f"  | {hum_bad_streak}/{n} hours below 80%\n"
-            f"  CO2         : {co2} ppm  (vs 6h ago: {ref_6h[2]} ppm, trend: {co2_trend})"
-            f"  | 24h peak: {co2_peak} ppm"
-            f"  | {co2_bad_streak}/{n} hours above 800 ppm\n\n"
-            f"Hourly history (last 24h, sampled every ~3h):\n{history_text}"
-        )
+
+def _categorize(days):
+    if days <= 0:
+        return "HARVEST_TODAY"
+    elif days <= 7:
+        return "HARVEST_WEEK"
+    elif days <= 14:
+        return "MONITOR"
     else:
-        temp = humidity = co2 = None
-        co2_bad_streak = hum_bad_streak = 0
-        sensor_text = "No sensor data available."
+        return "WAIT"
 
-    # ── 4. Block summary ──────────────────────────────────────────────────────
-    block_lines = []
+
+def _compute_blocks(blocks, today, flags):
+    """
+    Pure Python block calculation — no AI involved.
+    Returns list of block dicts ready for display.
+    """
+    result = []
+
+    co2_adj = -1 if flags["co2_high"]     else 0
+    hum_adj = +1 if flags["humidity_low"] else 0
+    total_adj = co2_adj + hum_adj
+
     for block_id, planted_date, harvest_count, last_harvest_date in blocks:
         hc = int(harvest_count or 0)
 
@@ -126,116 +152,131 @@ def get_harvest_advice(username):
             days_planted = 0
 
         if hc == 0:
-            target_days  = 14
+            target_days  = FIRST_HARVEST_DAYS
             days_elapsed = days_planted
             reference    = "since planting"
         else:
-            target_days  = 15
+            target_days = REHARVEST_DAYS
             try:
                 last         = datetime.date.fromisoformat(last_harvest_date)
                 days_elapsed = (today - last).days
             except Exception:
                 days_elapsed = 0
-            reference    = "since last harvest"
+            reference = "since last harvest"
 
-        days_remaining = target_days - days_elapsed
+        base_days_remaining = target_days - days_elapsed
+        adj_days_remaining  = base_days_remaining + total_adj
+        est_harvest_date    = today + datetime.timedelta(days=max(adj_days_remaining, 0))
+        category            = _categorize(adj_days_remaining)
 
-        if last_harvest_date and hc > 0:
-            block_lines.append(
-                f"{block_id}: planted {days_planted}d ago | "
-                f"{hc} harvest(s) done | {days_elapsed}d elapsed {reference} | "
-                f"target={target_days}d | days_until_harvest={days_remaining}"
-            )
+        if total_adj == 0 and not flags["temp_high"]:
+            reason = "No adjustment needed, all conditions are within optimal range."
         else:
-            block_lines.append(
-                f"{block_id}: planted {days_planted}d ago | not yet harvested | "
-                f"{days_elapsed}d elapsed {reference} | "
-                f"target={target_days}d | days_until_harvest={days_remaining}"
-            )
+            parts = []
+            if hum_adj:
+                parts.append(f"humidity at {flags['humidity']}% is below optimal, harvest delayed by 1 day")
+            if co2_adj:
+                parts.append(f"CO2 at {flags['co2']} ppm is high, harvest brought forward by 1 day")
+            if flags["temp_high"]:
+                parts.append(f"temperature at {flags['temp']}°C is above optimal, ensure ventilation")
+            reason = ". ".join(p.capitalize() for p in parts) + "."
 
-    blocks_text = "\n".join(block_lines)
+        result.append({
+            "block_id":           block_id,
+            "days_planted":       days_planted,
+            "est_harvest_date":   str(est_harvest_date),
+            "days_until_harvest": adj_days_remaining,
+            "category":           category,
+            "reason":             reason,
+        })
 
-    # ── 5. Prompt ─────────────────────────────────────────────────────────────
-    prompt = f"""You are an expert grey oyster mushroom farm advisor.
+    return result
+
+
+def _build_advice_prompt(today, sensor_text, flags):
+    """Prompt ONLY for the environment advice paragraph — no block math."""
+    return f"""You are an expert grey oyster mushroom farm advisor.
 
 Today: {today}
 
 === CURRENT SENSOR READINGS ===
 {sensor_text}
 
-=== ACTIVE BLOCKS ({len(blocks)} total) ===
-{blocks_text}
+=== GROW FACTS — GREY OYSTER MUSHROOM ===
+Optimal conditions: temp {TEMP_MIN}–{TEMP_MAX}°C | humidity {HUMIDITY_MIN}–{HUMIDITY_MAX}% | CO2 < {CO2_MAX:.0f} ppm
 
-Each block already has "days_until_harvest" pre-calculated for you based on:
-- First harvest target : 14 days after planting
-- Re-harvest target    : 15 days after last harvest
+=== YOUR TASK ===
+Write 1-3 short simple sentences for a farmer summary. 
+Keep it simple and direct — no long explanations.
+Mention the actual sensor values and what action to take if needed.
 
-=== GROW FACTS ===
-- Optimal : temp 25–30°C, humidity 80–90%, CO2 < 800 ppm
-
-SENSOR ADJUSTMENTS — apply only if conditions are clearly out of range:
-- If CO2 > 800 ppm  → subtract 1 from days_until_harvest (high CO2 accelerates flushing)
-- If humidity < 80% → add 1 to days_until_harvest (low humidity slows growth)
-- If both conditions apply simultaneously → apply both (net 0 if they cancel out)
-- If conditions are within optimal range → no adjustment needed
-Use the hourly trend and 24h context above to support your reason, but keep the
-adjustment simple: only ±1 day per condition. Do not invent larger adjustments.
-Show the adjusted value in days_until_harvest, not the original.
-
-=== YOUR TASKS ===
-
-TASK 1 — For each block, use the provided "days_until_harvest" value as your
-starting point. Adjust it slightly ONLY if sensor conditions are not optimal.
-Then compute est_harvest_date = today ({today}) + adjusted days_until_harvest.
-If days_until_harvest is 0 or negative, the block is ready now.
-
-TASK 2 — CATEGORIZE each block using the ADJUSTED days_until_harvest:
-- HARVEST_TODAY : days_until_harvest <= 0  (overdue or ready now)
-- HARVEST_WEEK  : days_until_harvest 1–7
-- MONITOR       : days_until_harvest 8–14
-- WAIT          : days_until_harvest > 14
-
-TASK 3 — Give 2–3 sentences of practical environment advice
-based on the current sensor readings.
+=== CRITICAL RESPONSE RULES ===
+- "advice" MUST be a plain flowing paragraph — NOT bullet points, NOT a list.
+- Write connected sentences, not isolated observations.
 
 === RESPONSE FORMAT ===
 Respond in valid JSON only. No text outside the JSON.
 
 {{
-  "blocks": [
-    {{
-      "block_id": "B1",
-      "days_planted": 0,
-      "est_harvest_date": "YYYY-MM-DD",
-      "days_until_harvest": 0,
-      "category": "WAIT",
-      "reason": "one sentence explanation"
-    }}
-  ],
-  "advice": "environment adjustment advice here"
+  "advice": "flowing paragraph environment advice here"
 }}"""
 
-    # ── 6. Groq API call ──────────────────────────────────────────────────────
+
+def get_harvest_advice(username):
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return None, "GROQ_API_KEY not found in .env file."
+
+    conn = get_db_connection()
     try:
-        client   = Groq(api_key=api_key)
+        history_rows, latest = _fetch_sensor_history(conn)
+        blocks = _fetch_blocks(conn, username)
+    finally:
+        conn.close()
+
+    if not blocks:
+        return None, "No active blocks found. Please record planting data first."
+
+    today = datetime.date.today()
+
+    sensor_text, flags = _build_sensor_summary(history_rows, latest)
+
+    # ── Block calculations done entirely in Python ─────────────────────────────
+    computed_blocks = _compute_blocks(blocks, today, flags)
+
+    # ── Groq only for the advice paragraph ────────────────────────────────────
+    try:
+        client  = Groq(api_key=api_key)
+        prompt  = _build_advice_prompt(today, sensor_text, flags)
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=1000,
-            response_format={"type": "json_object"}
+            model           = "llama-3.3-70b-versatile",
+            messages        = [{"role": "user", "content": prompt}],
+            temperature     = 0.3,
+            max_tokens      = 400,
+            response_format = {"type": "json_object"},
         )
         raw_text = response.choices[0].message.content
-        result        = json.loads(raw_text)
-        result["raw"] = raw_text
-        result["co2_bad_streak"] = co2_bad_streak
-        result["hum_bad_streak"] = hum_bad_streak
-        result["latest_temp"]    = temp
-        result["latest_humidity"]= humidity
-        result["latest_co2"]     = co2
-        return result, None
+        ai_result = json.loads(raw_text)
+        advice = ai_result.get("advice", "")
 
-    except json.JSONDecodeError:
-        return {"raw": raw_text, "blocks": [], "advice": ""}, None
-    except Exception as e:
-        return None, f"Groq API error: {str(e)}"
+    except Exception:
+        advice = (
+            f"Current humidity is {flags['humidity']}% and temperature is {flags['temp']}°C. "
+            f"{'Humidity is below optimal — consider misting. ' if flags['humidity_low'] else ''}"
+            f"{'Temperature is above optimal — ensure ventilation is running. ' if flags['temp_high'] else ''}"
+            f"{'CO2 is elevated — open vents or run a fan. ' if flags['co2_high'] else ''}"
+        )
+        raw_text = ""
+
+    result = {
+        "blocks":          computed_blocks,
+        "advice":          advice,
+        "raw":             raw_text,
+        "co2_bad_streak":  flags["co2_bad_streak"],
+        "hum_bad_streak":  flags["hum_bad_streak"],
+        "latest_temp":     flags["temp"],
+        "latest_humidity": flags["humidity"],
+        "latest_co2":      flags["co2"],
+    }
+
+    return result, None
