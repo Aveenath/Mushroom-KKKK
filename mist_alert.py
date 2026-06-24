@@ -1,22 +1,46 @@
 """
 Background misting alert script.
 Run by GitHub Actions every 30 minutes.
-Checks latest sensor data from Turso, asks Groq if misting is needed,
-and sends a Telegram notification if action is required.
+Queries Turso directly via HTTP REST API (no libsql_client needed),
+asks Groq if misting is needed, sends Telegram notification.
 """
 import os
+import json
 import requests
 import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from groq import Groq
-from utils import get_db_connection
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
-HUMIDITY_MIN = 80.0
-HUMIDITY_OPT = 85.0
-TEMP_MAX     = 30.0
+
+def query_turso(sql):
+    """Query Turso database directly via HTTP REST API."""
+    raw_url   = os.environ["TURSO_DATABASE_URL"]
+    auth_token = os.environ["TURSO_AUTH_TOKEN"]
+
+    # Normalise URL: libsql:// → https://
+    base_url = raw_url.replace("libsql://", "https://").rstrip("/")
+    endpoint = f"{base_url}/v2/pipeline"
+
+    payload = {
+        "requests": [
+            {"type": "execute", "stmt": {"sql": sql}},
+            {"type": "close"}
+        ]
+    }
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Content-Type": "application/json"
+    }
+    resp = requests.post(endpoint, json=payload, headers=headers, timeout=15)
+    resp.raise_for_status()
+
+    result = resp.json()["results"][0]["response"]["result"]
+    cols = [c["name"] for c in result["cols"]]
+    rows = [dict(zip(cols, [v["value"] for v in row])) for row in result["rows"]]
+    return rows
 
 
 def send_telegram(message):
@@ -26,19 +50,8 @@ def send_telegram(message):
     requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=10)
 
 
-def get_latest_sensor():
-    conn = get_db_connection()
-    row  = conn.execute(
-        "SELECT temp, humidity, co2, ts FROM sensors ORDER BY ts DESC LIMIT 1"
-    ).fetchone()
-    conn.close()
-    return row  # (temp, humidity, co2, ts)
-
-
 def ask_groq(temp, humidity, co2):
-    api_key = os.environ["GROQ_API_KEY"]
-    client  = Groq(api_key=api_key)
-
+    client = Groq(api_key=os.environ["GROQ_API_KEY"])
     prompt = f"""You are an oyster mushroom farm controller. Based on current sensor readings, decide if misting is needed.
 
 Current readings:
@@ -68,30 +81,30 @@ REASON: one short sentence why"""
 
 
 def main():
-    sensor = get_latest_sensor()
-    if not sensor:
+    rows = query_turso("SELECT temp, humidity, co2, ts FROM sensors ORDER BY ts DESC LIMIT 1")
+    if not rows:
         print("No sensor data found.")
         return
 
-    temp, humidity, co2, ts = sensor
+    row      = rows[0]
+    temp     = row["temp"]
+    humidity = row["humidity"]
+    co2      = row["co2"]
+    ts       = row["ts"]
     print(f"Latest reading: Temp={temp}°C, Humidity={humidity}%, CO2={co2}ppm @ {ts}")
 
     groq_reply = ask_groq(temp, humidity, co2)
     print(f"Groq says:\n{groq_reply}")
 
-    lines  = groq_reply.splitlines()
-    action = next((l for l in lines if l.startswith("ACTION:")), "ACTION: MIST OFF")
-    reason = next((l for l in lines if l.startswith("REASON:")), "REASON: -")
+    lines       = groq_reply.splitlines()
+    action_line = next((l for l in lines if l.startswith("ACTION:")), "ACTION: MIST OFF")
+    reason_line = next((l for l in lines if l.startswith("REASON:")), "REASON: -")
 
-    action_text = action.replace("ACTION:", "").strip()
-    reason_text = reason.replace("REASON:", "").strip()
+    action_text = action_line.replace("ACTION:", "").strip()
+    reason_text = reason_line.replace("REASON:", "").strip()
 
-    if "MIST ON" in action_text:
-        emoji = "💧"
-        status = "MIST ON"
-    else:
-        emoji = "✅"
-        status = "MIST OFF"
+    emoji  = "💧" if "MIST ON" in action_text else "✅"
+    status = "MIST ON" if "MIST ON" in action_text else "MIST OFF"
 
     message = (
         f"{emoji} <b>Mushroom Farm Misting Alert</b>\n\n"
