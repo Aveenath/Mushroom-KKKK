@@ -94,6 +94,17 @@ def main():
     ts       = row["ts"]
     print(f"Latest reading: Temp={temp}°C, Humidity={humidity}%, CO2={co2}ppm @ {ts}")
 
+    # Check if action is needed before calling Groq
+    humidity = float(humidity)
+    temp     = float(temp)
+
+    needs_mist_on  = humidity < 80.0 or temp > 30.0
+    needs_mist_off = humidity > 90.0
+
+    if not needs_mist_on and not needs_mist_off:
+        print(f"Humidity {humidity}% and Temp {temp}°C are within normal range. No alert sent.")
+        return
+
     groq_reply = ask_groq(temp, humidity, co2)
     print(f"Groq says:\n{groq_reply}")
 
