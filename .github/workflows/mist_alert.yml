@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install groq python-dotenv requests libsql-client
+        run: pip install groq python-dotenv requests libsql-client pandas
 
       - name: Run misting alert
         env:
