@@ -44,10 +44,11 @@ def query_turso(sql):
 
 
 def send_telegram(message):
-    token   = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
+    token   = os.environ["TELEGRAM_BOT_TOKEN"].strip()
+    chat_id = os.environ["TELEGRAM_CHAT_ID"].strip()
     url     = f"https://api.telegram.org/bot{token}/sendMessage"
-    requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=10)
+    resp = requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=10)
+    print(f"Telegram response: {resp.status_code} {resp.text}")
 
 
 def ask_groq(temp, humidity, co2):
