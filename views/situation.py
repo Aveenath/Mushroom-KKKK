@@ -1,5 +1,6 @@
 import streamlit as st
 import re
+import base64
 from utils import get_db_connection, get_local_now
 
 SECTION_OPTIONS = [f"S{i}" for i in range(1, 19)]  # S1–S18
@@ -23,6 +24,20 @@ def show():
 
     # --- Choose mode OUTSIDE form so it re-renders dynamically ---
     record_by = st.radio("Record by:", ["Block", "Section"], horizontal=True)
+
+    st.markdown("")
+
+    # --- Photo uploader OUTSIDE form so preview works ---
+    uploaded_photo = st.file_uploader(
+        "📷 Disease / Condition Photo (optional)",
+        type=["jpg", "jpeg", "png"],
+        help="Attach a photo of the mushroom block condition or disease."
+    )
+    photo_b64 = None
+    if uploaded_photo is not None:
+        photo_bytes = uploaded_photo.read()
+        photo_b64 = base64.b64encode(photo_bytes).decode("utf-8")
+        st.image(photo_bytes, caption="Photo preview", width=300)
 
     st.markdown("")
 
@@ -76,9 +91,9 @@ def show():
                     else:
                         conn = get_db_connection()
                         conn.execute(
-                            "INSERT INTO situation_reports (date, status, disease_noted, quality, notes, username, block_id, section_id) VALUES (?,?,?,?,?,?,?,?)",
+                            "INSERT INTO situation_reports (date, status, disease_noted, quality, notes, username, block_id, section_id, photo) VALUES (?,?,?,?,?,?,?,?,?)",
                             (report_datetime, status, disease_val, clean_quality, notes,
-                             st.session_state.username, block_ref, "-")
+                             st.session_state.username, block_ref, "-", photo_b64)
                         )
                         conn.commit()
                         conn.close()
@@ -86,9 +101,9 @@ def show():
             else:
                 conn = get_db_connection()
                 conn.execute(
-                    "INSERT INTO situation_reports (date, status, disease_noted, quality, notes, username, block_id, section_id) VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO situation_reports (date, status, disease_noted, quality, notes, username, block_id, section_id, photo) VALUES (?,?,?,?,?,?,?,?,?)",
                     (report_datetime, status, disease_val, clean_quality, notes,
-                     st.session_state.username, "-", selected_section)
+                     st.session_state.username, "-", selected_section, photo_b64)
                 )
                 conn.commit()
                 conn.close()

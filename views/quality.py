@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import re
+import base64
 from utils import get_db_connection, db_read_sql
 
 
@@ -26,7 +27,7 @@ def show():
 
     conn = get_db_connection()
     reports_df = db_read_sql(
-        "SELECT date, block_id, section_id, status, quality, disease_noted, notes FROM situation_reports WHERE username = ? ORDER BY date DESC",
+        "SELECT date, block_id, section_id, status, quality, disease_noted, notes, photo FROM situation_reports WHERE username = ? ORDER BY date DESC",
         conn, params=(st.session_state.username,)
     )
     conn.close()
@@ -63,7 +64,8 @@ def show():
     st.markdown("---")
     st.subheader("📝 Complete Log Repository")
 
-    csv = reports_df.to_csv(index=False).encode('utf-8')
+    export_cols = [c for c in reports_df.columns if c != 'photo']
+    csv = reports_df[export_cols].to_csv(index=False).encode('utf-8')
     st.download_button("📥 Export Full Logs to Excel/CSV", data=csv,
                        file_name="mushroom_farm_reports.csv", mime="text/csv")
 
@@ -139,3 +141,21 @@ def show():
                 conn.close()
                 st.success("Report updated.")
                 st.rerun()
+
+    # ── View photos ────────────────────────────────────────────────────────────
+    photo_rows = reports_df[reports_df['photo'].notna() & (reports_df['photo'].astype(str) != '') & (reports_df['photo'].astype(str) != 'None')] if 'photo' in reports_df.columns else pd.DataFrame()
+    if not photo_rows.empty:
+        st.markdown("---")
+        with st.expander("📷 View Report Photos", expanded=False):
+            st.caption("Select a report to view its attached photo.")
+            photo_options = photo_rows['Date & Time'].tolist()
+            sel_photo_dt  = st.selectbox("Select Report Date", photo_options, key="photo_select")
+            sel_photo_row = photo_rows[photo_rows['Date & Time'] == sel_photo_dt].iloc[0]
+            try:
+                img_bytes = base64.b64decode(sel_photo_row['photo'])
+                block_lbl = sel_photo_row.get('Block', '-')
+                sec_lbl   = sel_photo_row.get('Section', '-')
+                label     = f"{sel_photo_dt} | Block: {block_lbl} | Section: {sec_lbl}"
+                st.image(img_bytes, caption=label, use_container_width=True)
+            except Exception as e:
+                st.error(f"Could not load photo: {e}")

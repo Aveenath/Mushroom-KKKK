@@ -37,6 +37,7 @@ def _init_db():
     for _col in [
         "ALTER TABLE situation_reports ADD COLUMN block_id TEXT DEFAULT '-'",
         "ALTER TABLE situation_reports ADD COLUMN section_id TEXT DEFAULT '-'",
+        "ALTER TABLE situation_reports ADD COLUMN photo TEXT",
     ]:
         try:
             conn.execute(_col)
