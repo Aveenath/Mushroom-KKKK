@@ -113,10 +113,15 @@ def show():
     # ── Edit a report ──────────────────────────────────────────────────────────
     st.markdown("---")
     with st.expander("✏️ Edit a Report", expanded=False):
-        st.caption("Select a report by its date & time to correct mistakes.")
-        date_options = display_df['Date & Time'].tolist()
-        if date_options:
-            selected_dt = st.selectbox("Select Report", date_options)
+        st.caption("Select a report by Block / Section to correct mistakes.")
+        id_col = "Block" if view_mode == "Block" else "Section"
+        if not display_df.empty:
+            label_map = {
+                f"{row[id_col]} — {row['Date & Time']}": row['Date & Time']
+                for _, row in display_df.iterrows()
+            }
+            sel_label   = st.selectbox("Select Report", list(label_map.keys()))
+            selected_dt = label_map[sel_label]
             sel_row     = display_df[display_df['Date & Time'] == selected_dt].iloc[0]
 
             new_status  = st.selectbox("Situation", ["Normal", "Harvesting", "Disease Detected", "Maintenance"],
@@ -148,9 +153,14 @@ def show():
         st.markdown("---")
         with st.expander("📷 View Report Photos", expanded=False):
             st.caption("Select a report to view its attached photo.")
-            photo_options = photo_rows['Date & Time'].tolist()
-            sel_photo_dt  = st.selectbox("Select Report Date", photo_options, key="photo_select")
-            sel_photo_row = photo_rows[photo_rows['Date & Time'] == sel_photo_dt].iloc[0]
+            photo_id_col = "Block" if view_mode == "Block" else "Section"
+            photo_label_map = {
+                f"{row[photo_id_col]} — {row['Date & Time']}": row['Date & Time']
+                for _, row in photo_rows.iterrows()
+            }
+            sel_photo_label = st.selectbox("Select Report", list(photo_label_map.keys()), key="photo_select")
+            sel_photo_dt    = photo_label_map[sel_photo_label]
+            sel_photo_row   = photo_rows[photo_rows['Date & Time'] == sel_photo_dt].iloc[0]
             try:
                 img_bytes = base64.b64decode(sel_photo_row['photo'])
                 block_lbl = sel_photo_row.get('Block', '-')
