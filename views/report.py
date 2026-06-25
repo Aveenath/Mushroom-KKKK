@@ -228,6 +228,63 @@ def show():
                     use_container_width=True,
                 )
 
+                # ── Edit Harvest Weight ────────────────────────────────────────
+                if hc > 0:
+                    with st.expander("✏️ Edit Harvest Weight", expanded=False):
+                        st.caption("Correct a wrong weight entry for any harvest.")
+                        edit_harvest_num = st.selectbox(
+                            "Select Harvest #",
+                            options=list(range(1, hc + 1)),
+                            format_func=lambda x: f"Harvest #{x}",
+                            key=f"edit_harvest_num_{norm_id}_{cycle}"
+                        )
+                        existing_weight = None
+                        if not history_df.empty:
+                            match = history_df[history_df['harvest_number'].astype(int) == edit_harvest_num]
+                            if not match.empty:
+                                w = match.iloc[0]['weight_kg']
+                                existing_weight = round(float(w), 2) if (w is not None and pd.notna(w)) else None
+                        new_weight = st.number_input(
+                            "New Weight (kg)",
+                            min_value=0.0, step=0.1, format="%.2f",
+                            value=existing_weight if existing_weight is not None else 0.0,
+                            key=f"edit_weight_{norm_id}_{cycle}"
+                        )
+                        if st.button("💾 Save Weight", key=f"save_weight_{norm_id}_{cycle}"):
+                            weight_val = float(new_weight) if new_weight > 0 else None
+                            conn_edit = get_db_connection()
+                            conn_edit.execute(
+                                "UPDATE harvest_history SET weight_kg = ? "
+                                "WHERE block_id = ? AND username = ? AND cycle = ? AND harvest_number = ?",
+                                (weight_val, norm_id, st.session_state.username, cycle, edit_harvest_num)
+                            )
+                            conn_edit.commit()
+                            conn_edit.close()
+                            st.success(f"✅ Harvest #{edit_harvest_num} weight updated to {new_weight:.2f} kg.")
+                            st.rerun()
+
+                # ── Delete Cycle ───────────────────────────────────────────────
+                with st.expander("🗑️ Delete this Cycle", expanded=False):
+                    st.warning(
+                        f"This will permanently delete **Cycle {cycle}** of Block **{norm_id}** "
+                        f"and all its harvest history. This cannot be undone."
+                    )
+                    confirm = st.checkbox(f"Yes, I want to delete Block {norm_id} Cycle {cycle}")
+                    if st.button("🗑️ Confirm Delete", type="primary", disabled=not confirm):
+                        conn_del = get_db_connection()
+                        conn_del.execute(
+                            "DELETE FROM planting_records WHERE block_id = ? AND username = ? AND cycle = ?",
+                            (norm_id, st.session_state.username, cycle)
+                        )
+                        conn_del.execute(
+                            "DELETE FROM harvest_history WHERE block_id = ? AND username = ? AND cycle = ?",
+                            (norm_id, st.session_state.username, cycle)
+                        )
+                        conn_del.commit()
+                        conn_del.close()
+                        st.success(f"✅ Block {norm_id} Cycle {cycle} deleted.")
+                        st.rerun()
+
     # ── SECTION 2: Full Harvest Schedule ──────────────────────────────────────
     st.markdown("---")
     st.subheader("📋 Full Harvest Schedule")

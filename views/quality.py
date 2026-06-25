@@ -107,3 +107,35 @@ def show():
             conn.close()
             st.success("Logs successfully deleted!")
             st.rerun()
+
+    # ── Edit a report ──────────────────────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("✏️ Edit a Report", expanded=False):
+        st.caption("Select a report by its date & time to correct mistakes.")
+        date_options = display_df['Date & Time'].tolist()
+        if date_options:
+            selected_dt = st.selectbox("Select Report", date_options)
+            sel_row     = display_df[display_df['Date & Time'] == selected_dt].iloc[0]
+
+            new_status  = st.selectbox("Situation", ["Normal", "Harvesting", "Disease Detected", "Maintenance"],
+                                       index=["Normal", "Harvesting", "Disease Detected", "Maintenance"].index(sel_row.get("Situation", "Normal"))
+                                       if sel_row.get("Situation", "Normal") in ["Normal", "Harvesting", "Disease Detected", "Maintenance"] else 0)
+            new_quality = st.radio("Quality", ["Bad", "Normal", "Good"],
+                                   index=["Bad", "Normal", "Good"].index(sel_row.get("Quality", "Normal"))
+                                   if sel_row.get("Quality", "Normal") in ["Bad", "Normal", "Good"] else 1,
+                                   horizontal=True)
+            new_disease = st.text_input("Disease (leave blank if none)", value="" if sel_row.get("Disease") in ["None", "null", None] else str(sel_row.get("Disease", "")))
+            new_notes   = st.text_area("Notes", value=str(sel_row.get("Notes", "") or ""))
+
+            if st.button("💾 Save Changes"):
+                disease_val = new_disease.strip() if new_disease.strip() else "None"
+                conn = get_db_connection()
+                conn.execute(
+                    "UPDATE situation_reports SET status = ?, quality = ?, disease_noted = ?, notes = ? "
+                    "WHERE date = ? AND username = ?",
+                    (new_status, new_quality, disease_val, new_notes, selected_dt, st.session_state.username)
+                )
+                conn.commit()
+                conn.close()
+                st.success("Report updated.")
+                st.rerun()

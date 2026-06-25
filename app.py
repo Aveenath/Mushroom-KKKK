@@ -1,5 +1,6 @@
 import streamlit as st
 import hashlib
+import bcrypt
 from utils import get_db_connection
 
 st.set_page_config(page_title="Mushroom Farm OS", layout="wide")
@@ -55,13 +56,13 @@ def _init_db():
 _init_db()
 
 # --- AUTH ---
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+def _hash_bcrypt(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 def create_user(username, password):
     conn = get_db_connection()
     try:
-        conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hash_password(password)))
+        conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, _hash_bcrypt(password)))
         conn.commit()
         return True
     except Exception:
@@ -74,7 +75,21 @@ def verify_user(username, password):
     cursor = conn.execute("SELECT password FROM users WHERE username = ?", (username,))
     result = cursor.fetchone()
     conn.close()
-    return result is not None and result[0] == hash_password(password)
+    if result is None:
+        return False
+    stored = result[0]
+    # Bcrypt hashes start with $2b$ — legacy SHA-256 hashes do not
+    if stored.startswith("$2b$") or stored.startswith("$2a$"):
+        return bcrypt.checkpw(password.encode(), stored.encode())
+    # Legacy SHA-256 password — verify then upgrade to bcrypt in-place
+    if stored == hashlib.sha256(password.encode()).hexdigest():
+        new_hash = _hash_bcrypt(password)
+        conn2 = get_db_connection()
+        conn2.execute("UPDATE users SET password = ? WHERE username = ?", (new_hash, username))
+        conn2.commit()
+        conn2.close()
+        return True
+    return False
 
 if not st.session_state.logged_in:
     st.write("<br><br><br>", unsafe_allow_html=True)
@@ -139,6 +154,7 @@ if not st.session_state.logged_in:
 # --- NAVIGATION ---
 st.sidebar.markdown(f"**Welcome, {st.session_state.username}!**")
 page = st.sidebar.radio("Go to:", [
+    "Dashboard",
     "Live Monitor & Forecast",
     "Record Situation",
     "Record Planting",
@@ -154,7 +170,10 @@ if st.sidebar.button("Log Out"):
     st.rerun()
 
 # --- PAGE ROUTING ---
-if page == "Live Monitor & Forecast":
+if page == "Dashboard":
+    from views.dashboard import show
+    show()
+elif page == "Live Monitor & Forecast":
     from views.monitor import show
     show()
 elif page == "Record Situation":

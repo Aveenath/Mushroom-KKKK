@@ -16,3 +16,4 @@ groq
 python-dotenv
 libsql-client
 streamlit_autorefresh
+bcrypt
