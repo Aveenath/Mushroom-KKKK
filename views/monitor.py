@@ -71,7 +71,12 @@ def show():
 
     # ── Internal Farm Sensors ─────────────────────────────────────────────────
     st.subheader("🏠 Internal Farm Sensors")
-    st.caption(f"Latest reading: {latest['ts']}")
+    try:
+        ts_myt = pd.to_datetime(latest['ts']) + pd.Timedelta(hours=8)
+        ts_display = ts_myt.strftime("%Y-%m-%d %H:%M:%S") + " MYT"
+    except Exception:
+        ts_display = str(latest['ts'])
+    st.caption(f"Latest reading: {ts_display}")
 
     col1, col2, col3 = st.columns(3)
 
@@ -205,7 +210,12 @@ def show():
         "Uses pre-trained AI models to forecast Temperature, Humidity, and CO2 "
         "for the next 7 days, based on live synced sensor data."
     )
-    st.caption(f"📡 Using {len(df)} live readings — latest: {df['ts'].iloc[-1]}")
+    try:
+        latest_myt = pd.to_datetime(df['ts'].iloc[-1]) + pd.Timedelta(hours=8)
+        latest_ts_str = latest_myt.strftime("%Y-%m-%d %H:%M:%S") + " MYT"
+    except Exception:
+        latest_ts_str = str(df['ts'].iloc[-1])
+    st.caption(f"📡 Using {len(df)} live readings — latest: {latest_ts_str}")
 
     uploaded_csv = st.file_uploader(
         "📂 Upload Sensor CSV (Optional — overrides live data)", type=['csv']

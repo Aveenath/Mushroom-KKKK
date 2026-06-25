@@ -145,6 +145,7 @@ page = st.sidebar.radio("Go to:", [
     "Quality Analysis",
     "AI Image Detection",
     "SOP Procedures",
+    "Generate Report",
 ])
 st.sidebar.markdown("---")
 if st.sidebar.button("Log Out"):
@@ -170,4 +171,7 @@ elif page == "Quality Analysis":
     show()
 elif page == "AI Image Detection":
     from views.detection import show
+    show()
+elif page == "Generate Report":
+    from views.report import show
     show()

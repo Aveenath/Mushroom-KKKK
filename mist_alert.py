@@ -146,7 +146,7 @@ def main():
 
     message = (
         f"{emoji} <b>Mushroom Farm Misting Alert</b>\n\n"
-        f"🕐 Time: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC\n"
+        f"🕐 Time: {(datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime('%Y-%m-%d %H:%M')} MYT\n"
         f"🌡️ Temp: {temp}°C\n"
         f"💧 Humidity: {humidity}%\n"
         f"🌿 CO2: {co2} ppm\n\n"

@@ -44,12 +44,15 @@ def _get_status(next_harvest_date):
 def show():
     st.title("🌱 Harvest Schedule Manager")
 
-    # Add new columns to existing table if not yet present
+    # Add new columns to existing tables if not yet present
     conn = get_db_connection()
     for alter_sql in [
         "ALTER TABLE planting_records ADD COLUMN harvest_count INTEGER DEFAULT 0",
         "ALTER TABLE planting_records ADD COLUMN last_harvest_date TEXT",
         "ALTER TABLE planting_records ADD COLUMN retired INTEGER DEFAULT 0",
+        "ALTER TABLE planting_records ADD COLUMN cycle INTEGER DEFAULT 1",
+        "ALTER TABLE harvest_history ADD COLUMN weight_kg REAL",
+        "ALTER TABLE harvest_history ADD COLUMN cycle INTEGER DEFAULT 1",
     ]:
         try:
             conn.execute(alter_sql)
@@ -67,31 +70,38 @@ def show():
             st.error(err)
         else:
             conn = get_db_connection()
-            # FIX: renamed to search_result to avoid clash with AI result variable
-            search_result = db_read_sql(
-                "SELECT * FROM planting_records WHERE block_id = ? AND username = ?",
+            all_cycles_df = db_read_sql(
+                "SELECT * FROM planting_records WHERE block_id = ? AND username = ? ORDER BY cycle DESC",
                 conn, params=(norm_id, st.session_state.username)
             )
             conn.close()
-            if search_result.empty:
+            if all_cycles_df.empty:
                 st.warning(f"No record found for Block **{norm_id}**.")
             else:
-                row = search_result.iloc[0]
+                active_df = all_cycles_df[all_cycles_df['retired'].astype(int) == 0]
+                row = active_df.iloc[0] if not active_df.empty else all_cycles_df.iloc[0]
                 hc      = int(row.get('harvest_count') or 0)
                 lhd     = row.get('last_harvest_date') or None
                 retired = int(row.get('retired') or 0)
+                cycle   = int(row.get('cycle') or 1)
+                total_cycles = len(all_cycles_df)
+
+                st.success(f"Block **{row['block_id']}** found! — Cycle {cycle} of {total_cycles}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Species",            row['species'])
+                c2.metric("Planted",             row['planted_date'])
+                c3.metric("Total Harvests Done", hc)
+
                 if retired:
-                    st.error(f"Block **{row['block_id']}** has been retired after {hc} harvest(s).")
+                    c4.metric("Status", "Retired")
+                    st.error(f"Block **{row['block_id']}** (Cycle {cycle}) has been retired after {hc} harvest(s). You can now replant it.")
                 else:
-                    next_date    = _get_next_harvest(row['planted_date'], hc, lhd)
+                    next_date       = _get_next_harvest(row['planted_date'], hc, lhd)
                     status_label, _ = _get_status(next_date)
-                    st.success(f"Block **{row['block_id']}** found!")
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Species",            row['species'])
-                    c2.metric("Planted",             row['planted_date'])
-                    c3.metric("Total Harvests Done", hc)
-                    c4.metric("Next Harvest Date",   str(next_date))
+                    c4.metric("Next Harvest Date", str(next_date))
                     st.info(f"Status: {status_label}  |  Next interval: {14 if hc == 0 else 15} days")
+
+                st.caption("💡 For full harvest history and weight details, go to **Generate Report** in the sidebar.")
 
     # ── AI HARVEST ADVISOR ────────────────────────────────────────────────────
     st.markdown("---")
@@ -209,27 +219,35 @@ def show():
                     if err:
                         error_list.append(f"{raw}: {err}")
                         continue
-                    conn      = get_db_connection()
-                    duplicate = conn.execute(
-                        "SELECT block_id FROM planting_records WHERE block_id = ? AND username = ?",
+                    conn   = get_db_connection()
+                    active = conn.execute(
+                        "SELECT block_id FROM planting_records WHERE block_id = ? AND username = ? AND (retired = 0 OR retired IS NULL)",
                         (clean_id, st.session_state.username)
                     ).fetchone()
-                    if duplicate:
-                        error_list.append(f"{clean_id}: already exists")
+                    if active:
+                        error_list.append(f"{clean_id}: already has an active planting — retire it first before replanting.")
                         conn.close()
                         continue
-                    planted_str    = planted_date.strftime("%Y-%m-%d")
-                    first_harvest  = (planted_date + datetime.timedelta(days=14)).strftime("%Y-%m-%d")
+                    max_cycle_row = conn.execute(
+                        "SELECT MAX(cycle) FROM planting_records WHERE block_id = ? AND username = ?",
+                        (clean_id, st.session_state.username)
+                    ).fetchone()
+                    next_cycle    = (max_cycle_row[0] or 0) + 1
+                    planted_str   = planted_date.strftime("%Y-%m-%d")
+                    first_harvest = (planted_date + datetime.timedelta(days=14)).strftime("%Y-%m-%d")
                     conn.execute(
                         "INSERT INTO planting_records "
-                        "(block_id, species, planted_date, notes, predicted_harvest, username, harvest_count, last_harvest_date, retired) "
-                        "VALUES (?,?,?,?,?,?,?,?,?)",
+                        "(block_id, species, planted_date, notes, predicted_harvest, username, harvest_count, last_harvest_date, retired, cycle) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (clean_id, species, planted_str, notes, first_harvest,
-                         st.session_state.username, 0, None, 0)
+                         st.session_state.username, 0, None, 0, next_cycle)
                     )
                     conn.commit()
                     conn.close()
-                    success_list.append(clean_id)
+                    if next_cycle > 1:
+                        success_list.append(f"{clean_id} (Cycle {next_cycle} — replanted)")
+                    else:
+                        success_list.append(clean_id)
 
                 if success_list:
                     st.success(f"✅ Recorded: {', '.join(success_list)} — First harvest in 14 days!")
@@ -258,6 +276,7 @@ def show():
                 placeholder="Select one or more blocks..."
             )
             actual_harvest_date = st.date_input("Actual Harvest Date", get_local_now().date())
+            harvest_weight      = st.number_input("Total Harvest Weight (kg)", min_value=0.0, step=0.1, format="%.2f")
             retire_block        = st.checkbox("Retire all selected blocks after this harvest")
 
             if st.form_submit_button("✅ Confirm"):
@@ -269,23 +288,31 @@ def show():
                     for selected_block in selected_blocks:
                         try:
                             row_df = db_read_sql(
-                                "SELECT * FROM planting_records WHERE block_id = ? AND username = ? LIMIT 1",
+                                "SELECT * FROM planting_records WHERE block_id = ? AND username = ? AND (retired = 0 OR retired IS NULL) LIMIT 1",
                                 conn, params=(selected_block, st.session_state.username)
                             )
                             if row_df.empty:
                                 error_list.append(selected_block)
                                 continue
-                            row    = row_df.iloc[0]
-                            new_hc = int(row.get('harvest_count') or 0) + 1
+                            row          = row_df.iloc[0]
+                            new_hc       = int(row.get('harvest_count') or 0) + 1
+                            current_cycle = int(row.get('cycle') or 1)
+                            harvest_date_str = actual_harvest_date.strftime("%Y-%m-%d")
                             conn.execute(
                                 "UPDATE planting_records "
                                 "SET harvest_count = ?, last_harvest_date = ?, retired = ? "
-                                "WHERE block_id = ? AND username = ?",
-                                (new_hc, actual_harvest_date.strftime("%Y-%m-%d"),
+                                "WHERE block_id = ? AND username = ? AND cycle = ?",
+                                (new_hc, harvest_date_str,
                                  1 if retire_block else 0,
-                                 selected_block, st.session_state.username)
+                                 selected_block, st.session_state.username, current_cycle)
                             )
-                            success_list.append(f"{selected_block} (#{new_hc})")
+                            weight_val = float(harvest_weight) if harvest_weight and harvest_weight > 0 else None
+                            conn.execute(
+                                "INSERT INTO harvest_history (block_id, harvest_number, harvest_date, username, weight_kg, cycle) "
+                                "VALUES (?, ?, ?, ?, ?, ?)",
+                                (selected_block, new_hc, harvest_date_str, st.session_state.username, weight_val, current_cycle)
+                            )
+                            success_list.append(f"{selected_block} (Cycle {current_cycle} #{new_hc})")
                         except Exception:
                             error_list.append(selected_block)
                     conn.commit()
@@ -302,132 +329,4 @@ def show():
     else:
         st.info("No active blocks. All blocks are retired or none recorded yet.")
 
-    st.markdown("---")
-
-    # ── FULL SCHEDULE TABLE ───────────────────────────────────────────────────
-    st.subheader("📋 Full Harvest Schedule")
-    conn = get_db_connection()
-    try:
-        df_all = db_read_sql(
-            "SELECT * FROM planting_records WHERE username = ? ORDER BY block_id",
-            conn, params=(st.session_state.username,)
-        )
-    except Exception:
-        df_all = pd.DataFrame()
-    finally:
-        conn.close()
-
-    if not df_all.empty:
-        schedule_rows = []
-        for _, row in df_all.iterrows():
-            hc      = int(row.get('harvest_count') or 0)
-            lhd     = row.get('last_harvest_date') or None
-            retired = int(row.get('retired') or 0)
-            if retired:
-                schedule_rows.append({
-                    'Block ID':     row['block_id'],
-                    'Species':      row['species'],
-                    'Planted':      row['planted_date'],
-                    'Harvests Done': hc,
-                    'Last Harvest': lhd or '-',
-                    'Next Harvest': '-',
-                    'Days Left':    9999,
-                    'Status':       'Retired',
-                })
-            else:
-                next_date             = _get_next_harvest(row['planted_date'], hc, lhd)
-                status_label, days_left = _get_status(next_date)
-                schedule_rows.append({
-                    'Block ID':     row['block_id'],
-                    'Species':      row['species'],
-                    'Planted':      row['planted_date'],
-                    'Harvests Done': hc,
-                    'Last Harvest': lhd or '-',
-                    'Next Harvest': str(next_date),
-                    'Days Left':    days_left,
-                    'Status':       status_label,
-                })
-
-        schedule_df = pd.DataFrame(schedule_rows).sort_values('Days Left')
-
-        csv_export = schedule_df.drop(columns=['Days Left']).to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "📥 Export Schedule to CSV",
-            data=csv_export,
-            file_name="harvest_schedule.csv",
-            mime="text/csv"
-        )
-
-        # FIX: Delete? column only for active table — don't add to full df
-        active_df  = schedule_df[schedule_df['Status'] != 'Retired'].copy()
-        retired_df = schedule_df[schedule_df['Status'] == 'Retired'].copy()
-
-        active_df.insert(len(active_df.columns), "Delete?", False)
-
-        tab_all, tab_today, tab_week, tab_retired = st.tabs([
-            "All Active", "🔴 Harvest Today / Overdue", "🟡 This Week", "⬛ Retired"
-        ])
-
-        def _render_active_table(df, key):
-            return st.data_editor(
-                df.drop(columns=['Days Left']),
-                column_config={
-                    "Delete?": st.column_config.CheckboxColumn("🗑️ Delete?", default=False)
-                },
-                disabled=["Block ID", "Species", "Planted", "Harvests Done",
-                          "Last Harvest", "Next Harvest", "Status"],
-                hide_index=True,
-                use_container_width=True,
-                height=350,
-                key=key
-            )
-
-        def _render_readonly_table(df, key):
-            """Retired table — no Delete? column, fully read-only."""
-            return st.dataframe(
-                df.drop(columns=['Days Left']),
-                hide_index=True,
-                use_container_width=True,
-                height=350,
-            )
-
-        with tab_all:
-            edited_all = _render_active_table(active_df.copy(), key="tbl_all")
-
-        with tab_today:
-            today_df = active_df[active_df['Days Left'] <= 0].copy()
-            if today_df.empty:
-                st.success("No blocks overdue or due today.")
-            else:
-                _render_active_table(today_df, key="tbl_today")
-
-        with tab_week:
-            week_df = active_df[active_df['Days Left'].between(1, 7)].copy()
-            if week_df.empty:
-                st.info("No blocks due in the next 7 days.")
-            else:
-                _render_active_table(week_df, key="tbl_week")
-
-        with tab_retired:
-            if retired_df.empty:
-                st.info("No retired blocks yet.")
-            else:
-                _render_readonly_table(retired_df, key="tbl_retired")
-
-        # Delete confirmation — only from the active all-tab editor
-        rows_to_delete = edited_all[edited_all["Delete?"] == True]
-        if not rows_to_delete.empty:
-            st.warning(f"{len(rows_to_delete)} block(s) selected for deletion.")
-            if st.button("🚨 Confirm Delete Selected Blocks"):
-                conn_del = get_db_connection()
-                for blk in rows_to_delete['Block ID']:
-                    conn_del.execute(
-                        "DELETE FROM planting_records WHERE block_id = ? AND username = ?",
-                        (blk, st.session_state.username)
-                    )
-                conn_del.commit()
-                conn_del.close()
-                st.success("Deleted successfully!")
-                st.rerun()
-    else:
-        st.info("No planting records found. Add a block above to get started.")
+    st.caption("💡 To view the full harvest schedule and block reports, go to **Generate Report** in the sidebar.")
