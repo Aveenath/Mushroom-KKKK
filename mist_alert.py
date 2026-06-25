@@ -12,6 +12,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from groq import Groq
 
+DATA_STALE_HOURS = 2   # alert if Turso data is older than this
+
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 
@@ -93,6 +95,23 @@ def main():
     co2      = row["co2"]
     ts       = row["ts"]
     print(f"Latest reading: Temp={temp}°C, Humidity={humidity}%, CO2={co2}ppm @ {ts}")
+
+    # Check data freshness — warn if Turso hasn't been updated recently
+    try:
+        ts_dt = datetime.datetime.fromisoformat(str(ts).replace("Z", ""))
+        age_hours = (datetime.datetime.utcnow() - ts_dt).total_seconds() / 3600
+        if age_hours > DATA_STALE_HOURS:
+            stale_msg = (
+                f"⚠️ <b>Sensor Data Stale</b>\n\n"
+                f"Last reading was <b>{age_hours:.1f} hours ago</b> ({ts}).\n"
+                f"Live sync only runs when the Streamlit app is open.\n"
+                f"Please check the app or sensor connection."
+            )
+            send_telegram(stale_msg)
+            print(f"Stale data alert sent ({age_hours:.1f}h old). Skipping misting check.")
+            return
+    except Exception as e:
+        print(f"Could not parse timestamp '{ts}': {e}")
 
     # Check if action is needed before calling Groq
     humidity = float(humidity)
