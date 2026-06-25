@@ -105,18 +105,25 @@ def main():
         print(f"Humidity {humidity}% and Temp {temp}°C are within normal range. No alert sent.")
         return
 
-    groq_reply = ask_groq(temp, humidity, co2)
-    print(f"Groq says:\n{groq_reply}")
+    # Determine action from thresholds directly (Groq is advisory only)
+    if needs_mist_on:
+        status = "MIST ON"
+        emoji  = "💧"
+    else:
+        status = "MIST OFF"
+        emoji  = "✅"
 
-    lines       = groq_reply.splitlines()
-    action_line = next((l for l in lines if l.startswith("ACTION:")), "ACTION: MIST OFF")
-    reason_line = next((l for l in lines if l.startswith("REASON:")), "REASON: -")
-
-    action_text = action_line.replace("ACTION:", "").strip()
-    reason_text = reason_line.replace("REASON:", "").strip()
-
-    emoji  = "💧" if "MIST ON" in action_text else "✅"
-    status = "MIST ON" if "MIST ON" in action_text else "MIST OFF"
+    # Ask Groq for a human-readable reason — but don't let a Groq failure block the alert
+    reason_text = "Sensor thresholds breached — check misting system."
+    try:
+        groq_reply = ask_groq(temp, humidity, co2)
+        print(f"Groq says:\n{groq_reply}")
+        lines       = groq_reply.splitlines()
+        reason_line = next((l for l in lines if l.startswith("REASON:")), "")
+        if reason_line:
+            reason_text = reason_line.replace("REASON:", "").strip()
+    except Exception as e:
+        print(f"Groq unavailable ({e}) — sending alert with sensor data only.")
 
     message = (
         f"{emoji} <b>Mushroom Farm Misting Alert</b>\n\n"
