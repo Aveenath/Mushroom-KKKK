@@ -1,4 +1,4 @@
-name: Sensor Sync
+name: Sensor Sync + Misting Alert
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:           # allow manual trigger from GitHub UI
 
 jobs:
-  sync:
+  sync-and-alert:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests python-dotenv
+        run: pip install requests python-dotenv groq
 
       - name: Sync SmartSense to Turso
         env:
@@ -26,3 +26,12 @@ jobs:
           DIDIKHUB_USERNAME:   ${{ secrets.DIDIKHUB_USERNAME }}
           DIDIKHUB_PASSWORD:   ${{ secrets.DIDIKHUB_PASSWORD }}
         run: python sync_sensor_job.py
+
+      - name: Run misting alert
+        env:
+          TURSO_DATABASE_URL:  ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN:    ${{ secrets.TURSO_AUTH_TOKEN }}
+          GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
+          TELEGRAM_BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python mist_alert.py

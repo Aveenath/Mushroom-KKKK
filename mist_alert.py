@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from groq import Groq
 
-DATA_STALE_HOURS  = 0.5  # warn if sensor data older than 30 minutes
+DATA_STALE_HOURS  = 1.0  # warn if sensor data older than 1 hour
 REMIND_HOURS      = 2    # re-send same alert after this many hours
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
@@ -189,8 +189,7 @@ def main():
                 send_telegram(
                     f"⚠️ <b>Sensor Data Stale</b>\n\n"
                     f"Last reading was <b>{age_label} ago</b>.\n"
-                    f"Live sync only runs when the Streamlit app is open.\n"
-                    f"Please check the app or sensor connection."
+                    f"Auto-sync may have failed. Please check the sensor connection."
                 )
                 _set_state("stale", "STALE")
                 print(f"Stale alert sent ({age_label} old). {r}")
