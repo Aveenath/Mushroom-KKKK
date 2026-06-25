@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from groq import Groq
 
 DATA_STALE_HOURS  = 1.0  # warn if sensor data older than 1 hour
-REMIND_HOURS      = 2    # re-send same alert after this many hours
+REMIND_HOURS      = 0.5  # re-send alert every 30 minutes if problem not fixed
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
