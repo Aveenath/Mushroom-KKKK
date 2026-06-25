@@ -95,15 +95,19 @@ def main():
         print("No data returned.")
         return
 
-    existing = query_turso("SELECT id FROM sensors")
-    existing_ids = {str(r["id"]) for r in existing}
+    today = datetime.date.today().isoformat()
+    existing = query_turso(
+        "SELECT id FROM sensors WHERE ts >= ?", [today + " 00:00:00"]
+    )
+    # Normalize to int string — Turso may return 315.0 (float) while CSV gives "315"
+    existing_ids = {str(int(float(str(r["id"])))) for r in existing}
 
     inserted = 0
     for r in rows:
-        if str(r["id"]) in existing_ids:
+        if str(int(float(str(r["id"])))) in existing_ids:
             continue
         query_turso(
-            "INSERT INTO sensors (id, device, co2, temp, humidity, ts, ip, created) "
+            "INSERT OR IGNORE INTO sensors (id, device, co2, temp, humidity, ts, ip, created) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [r["id"], r["device"], r["co2"], r["temp"], r["humidity"], r["ts"], r["ip"], r["created"]]
         )
