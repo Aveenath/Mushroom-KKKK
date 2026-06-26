@@ -162,10 +162,13 @@ def show():
             sel_photo_dt    = photo_label_map[sel_photo_label]
             sel_photo_row   = photo_rows[photo_rows['Date & Time'] == sel_photo_dt].iloc[0]
             try:
-                img_bytes = base64.b64decode(sel_photo_row['photo'])
+                photo_val = str(sel_photo_row['photo'])
                 block_lbl = sel_photo_row.get('Block', '-')
                 sec_lbl   = sel_photo_row.get('Section', '-')
                 label     = f"{sel_photo_dt} | Block: {block_lbl} | Section: {sec_lbl}"
-                st.image(img_bytes, caption=label, use_container_width=True)
+                if photo_val.startswith("http"):
+                    st.image(photo_val, caption=label, use_container_width=True)
+                else:
+                    st.image(base64.b64decode(photo_val), caption=label, use_container_width=True)
             except Exception as e:
                 st.error(f"Could not load photo: {e}")
