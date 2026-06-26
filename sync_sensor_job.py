@@ -119,6 +119,14 @@ def main():
 
     print(f"Inserted {inserted} new row(s) into Turso. Failed: {failed}.")
 
+    # ── Archive: delete sensor rows older than 90 days ─────────────────────────
+    cutoff = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+    try:
+        query_turso(f"DELETE FROM sensors WHERE ts < '{cutoff} 00:00:00'")
+        print(f"Archived: deleted sensor rows older than {cutoff}.")
+    except Exception as e:
+        print(f"Archive step failed: {e}")
+
 
 if __name__ == "__main__":
     main()

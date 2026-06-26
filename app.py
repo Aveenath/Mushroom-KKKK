@@ -92,6 +92,26 @@ def verify_user(username, password):
         return True
     return False
 
+# --- BRUTE FORCE PROTECTION ---
+MAX_ATTEMPTS  = 3
+LOCKOUT_SECS  = 30
+
+if 'login_attempts' not in st.session_state:
+    st.session_state.login_attempts = 0
+if 'lockout_until' not in st.session_state:
+    st.session_state.lockout_until = None
+
+def _is_locked_out():
+    if st.session_state.lockout_until is None:
+        return False, 0
+    import time
+    remaining = st.session_state.lockout_until - time.time()
+    if remaining > 0:
+        return True, int(remaining)
+    st.session_state.lockout_until  = None
+    st.session_state.login_attempts = 0
+    return False, 0
+
 if not st.session_state.logged_in:
     st.write("<br><br><br>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.2, 1])
@@ -105,18 +125,34 @@ if not st.session_state.logged_in:
 
         tab1, tab2 = st.tabs(["🔒 Log In", "📝 Sign Up"])
         with tab1:
+            locked, secs_left = _is_locked_out()
+            if locked:
+                st.error(f"🔒 Too many failed attempts. Please wait **{secs_left} seconds** before trying again.")
+                st.rerun()
             with st.form("login_form", border=True):
                 l_user = st.text_input("Username")
                 l_pass = st.text_input("Password", type="password")
                 st.write("")
                 if st.form_submit_button("Log In", use_container_width=True):
-                    if verify_user(l_user, l_pass):
-                        st.session_state.logged_in = True
-                        st.session_state.username = l_user
+                    locked, secs_left = _is_locked_out()
+                    if locked:
+                        st.error(f"🔒 Too many failed attempts. Wait {secs_left}s.")
+                    elif verify_user(l_user, l_pass):
+                        st.session_state.logged_in       = True
+                        st.session_state.username        = l_user
+                        st.session_state.login_attempts  = 0
+                        st.session_state.lockout_until   = None
                         st.success("Login successful!")
                         st.rerun()
                     else:
-                        st.error("Incorrect username or password")
+                        import time
+                        st.session_state.login_attempts += 1
+                        remaining = MAX_ATTEMPTS - st.session_state.login_attempts
+                        if st.session_state.login_attempts >= MAX_ATTEMPTS:
+                            st.session_state.lockout_until = time.time() + LOCKOUT_SECS
+                            st.error(f"🔒 Too many failed attempts. Locked out for {LOCKOUT_SECS} seconds.")
+                        else:
+                            st.error(f"Incorrect username or password. {remaining} attempt(s) left.")
 
         with tab2:
             with st.form("signup_form", border=True):
