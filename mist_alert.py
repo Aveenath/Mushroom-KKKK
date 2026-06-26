@@ -35,7 +35,7 @@ def query_turso(sql):
     resp.raise_for_status()
     result = resp.json()["results"][0]["response"]["result"]
     cols   = [c["name"] for c in result["cols"]]
-    return [dict(zip(cols, [v["value"] for v in row])) for row in result["rows"]]
+    return [dict(zip(cols, [v.get("value") for v in row])) for row in result["rows"]]
 
 
 # ── Telegram ───────────────────────────────────────────────────────────────────
