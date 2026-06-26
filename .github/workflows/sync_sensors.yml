@@ -20,6 +20,7 @@ jobs:
         run: pip install requests python-dotenv groq
 
       - name: Sync SmartSense to Turso
+        continue-on-error: true   # alert must run even if sync fails
         env:
           TURSO_DATABASE_URL:  ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN:    ${{ secrets.TURSO_AUTH_TOKEN }}

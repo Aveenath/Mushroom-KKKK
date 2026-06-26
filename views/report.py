@@ -5,6 +5,127 @@ import re
 from utils import get_db_connection, get_local_now, db_read_sql
 
 
+def _safe(text):
+    return str(text).encode('latin-1', errors='ignore').decode('latin-1')
+
+
+def _build_schedule_pdf(schedule_df):
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.add_page()
+    pdf.set_margins(10, 10, 10)
+
+    pdf.set_font("Helvetica", "B", 15)
+    pdf.cell(0, 10, _safe("Full Harvest Schedule"), ln=True)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.cell(0, 5, _safe(f"Generated: {datetime.date.today()}"), ln=True)
+    pdf.ln(4)
+
+    df = schedule_df.drop(columns=['Days Left'])
+    headers = list(df.columns)
+    # Block ID, Cycle, Planted, Harvests Done, Last Harvest, Next Harvest, Status
+    widths  = [25, 15, 28, 30, 28, 28, 36]
+
+    pdf.set_fill_color(76, 175, 80)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 8)
+    for h, w in zip(headers, widths):
+        pdf.cell(w, 7, _safe(str(h)), border=1, fill=True)
+    pdf.ln()
+
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Helvetica", "", 8)
+    for i, (_, row) in enumerate(df.iterrows()):
+        pdf.set_fill_color(245, 245, 245) if i % 2 == 0 else pdf.set_fill_color(255, 255, 255)
+        for val, w in zip(row, widths):
+            pdf.cell(w, 6, _safe(str(val)[:18]), border=1, fill=True)
+        pdf.ln()
+
+    return bytes(pdf.output())
+
+
+def _build_harvest_pdf(norm_id, cycle, species, planted_date, display_rows, sit_df, raw_weights):
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.add_page()
+    pdf.set_margins(10, 10, 10)
+
+    pdf.set_font("Helvetica", "B", 15)
+    pdf.cell(0, 10, _safe(f"Block {norm_id} - Cycle {cycle} Report"), ln=True)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.cell(0, 5, _safe(f"Species: {species}  |  Planted: {planted_date}  |  Generated: {datetime.date.today()}"), ln=True)
+    pdf.ln(3)
+
+    if raw_weights:
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.cell(0, 6, _safe(
+            f"Yield: Total {sum(raw_weights):.2f} kg  |  Avg {sum(raw_weights)/len(raw_weights):.2f} kg  |  Best {max(raw_weights):.2f} kg"
+        ), ln=True)
+        pdf.ln(2)
+
+    # Harvest history table
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 7, "Harvest History", ln=True)
+
+    h_headers = ["#", "Predicted Date", "Actual Date", "Weight (kg)"]
+    h_widths  = [58, 44, 44, 44]
+
+    pdf.set_fill_color(76, 175, 80)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 8)
+    for h, w in zip(h_headers, h_widths):
+        pdf.cell(w, 7, _safe(h), border=1, fill=True)
+    pdf.ln()
+
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Helvetica", "", 8)
+    for i, r in enumerate(display_rows):
+        pdf.set_fill_color(245, 245, 245) if i % 2 == 0 else pdf.set_fill_color(255, 255, 255)
+        vals = [
+            str(r.get("#", ""))[:32],
+            str(r.get("Predicted Date", ""))[:15],
+            str(r.get("Actual Date", ""))[:15],
+            str(r.get("Weight (kg)", "")),
+        ]
+        for val, w in zip(vals, h_widths):
+            pdf.cell(w, 6, _safe(val), border=1, fill=True)
+        pdf.ln()
+
+    if not sit_df.empty:
+        pdf.ln(5)
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 7, "Situation Reports", ln=True)
+
+        s_headers = ["Date", "Status", "Disease", "Quality", "Notes"]
+        s_widths  = [38, 30, 30, 20, 72]
+
+        pdf.set_fill_color(76, 175, 80)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 8)
+        for h, w in zip(s_headers, s_widths):
+            pdf.cell(w, 7, _safe(h), border=1, fill=True)
+        pdf.ln()
+
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Helvetica", "", 7)
+        for i, (_, row) in enumerate(sit_df.iterrows()):
+            pdf.set_fill_color(245, 245, 245) if i % 2 == 0 else pdf.set_fill_color(255, 255, 255)
+            vals = [
+                str(row.get("Date", ""))[:22],
+                str(row.get("Status", ""))[:18],
+                str(row.get("Disease", ""))[:18],
+                str(row.get("Quality", ""))[:10],
+                str(row.get("Notes", "") or "")[:45],
+            ]
+            for val, w in zip(vals, s_widths):
+                pdf.cell(w, 6, _safe(val), border=1, fill=True)
+            pdf.ln()
+
+    return bytes(pdf.output())
+
+
 def _validate_and_normalize(block_id):
     raw = block_id.strip()
     if not raw.startswith('B'):
@@ -208,7 +329,7 @@ def show():
                     })
                     st.dataframe(sit_df, hide_index=True, use_container_width=True)
 
-                # ── CSV Export ─────────────────────────────────────────────────
+                # ── Export ─────────────────────────────────────────────────────
                 st.markdown("---")
                 export_df = report_df.copy()
                 if not sit_df.empty:
@@ -219,14 +340,28 @@ def show():
                         sit_df.rename(columns={"Date": "#"}),
                     ], ignore_index=True)
 
-                csv = export_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    f"📥 Export Full Report — Block {norm_id} Cycle {cycle}",
-                    data=csv,
-                    file_name=f"report_{norm_id}_cycle{cycle}_{get_local_now().date()}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
+                exp_col1, exp_col2 = st.columns(2)
+                with exp_col1:
+                    csv = export_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        f"📥 Export CSV — Block {norm_id} Cycle {cycle}",
+                        data=csv,
+                        file_name=f"report_{norm_id}_cycle{cycle}_{get_local_now().date()}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                with exp_col2:
+                    pdf_bytes = _build_harvest_pdf(
+                        norm_id, cycle, str(row['species']), str(row['planted_date']),
+                        display_rows, sit_df, raw_weights
+                    )
+                    st.download_button(
+                        f"📄 Export PDF — Block {norm_id} Cycle {cycle}",
+                        data=pdf_bytes,
+                        file_name=f"report_{norm_id}_cycle{cycle}_{get_local_now().date()}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
 
                 # ── Edit Harvest Weight ────────────────────────────────────────
                 if hc > 0:
@@ -301,13 +436,25 @@ def show():
             active_df  = schedule_df[schedule_df['Status'] != 'Retired'].copy()
             retired_df = schedule_df[schedule_df['Status'] == 'Retired'].copy()
 
-            csv_export = schedule_df.drop(columns=['Days Left']).to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Export Full Schedule to CSV",
-                data=csv_export,
-                file_name=f"harvest_schedule_{get_local_now().date()}.csv",
-                mime="text/csv",
-            )
+            sch_col1, sch_col2 = st.columns(2)
+            with sch_col1:
+                csv_export = schedule_df.drop(columns=['Days Left']).to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "📥 Export Full Schedule (CSV)",
+                    data=csv_export,
+                    file_name=f"harvest_schedule_{get_local_now().date()}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            with sch_col2:
+                sch_pdf = _build_schedule_pdf(schedule_df)
+                st.download_button(
+                    "📄 Export Full Schedule (PDF)",
+                    data=sch_pdf,
+                    file_name=f"harvest_schedule_{get_local_now().date()}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
 
             tab_active, tab_overdue, tab_week, tab_retired = st.tabs([
                 "All Active", "🔴 Overdue / Today", "🟡 This Week", "⬛ Retired"

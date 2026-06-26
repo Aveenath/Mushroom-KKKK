@@ -3,7 +3,55 @@ import pandas as pd
 import plotly.express as px
 import re
 import base64
+import datetime
 from utils import get_db_connection, db_read_sql
+
+
+def _safe(text):
+    return str(text).encode('latin-1', errors='ignore').decode('latin-1')
+
+
+def _quality_pdf(df, view_label):
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.add_page()
+    pdf.set_margins(10, 10, 10)
+
+    pdf.set_font("Helvetica", "B", 15)
+    pdf.cell(0, 10, _safe("Quality & Disease Analysis Report"), ln=True)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.cell(0, 5, _safe(f"View: {view_label}  |  Generated: {datetime.date.today()}"), ln=True)
+    pdf.ln(4)
+
+    headers = ["Date & Time", view_label, "Situation", "Quality", "Disease", "Notes"]
+    id_col  = "Block" if view_label == "Block" else "Section"
+    widths  = [38, 18, 28, 18, 28, 60]
+
+    pdf.set_fill_color(76, 175, 80)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 8)
+    for h, w in zip(headers, widths):
+        pdf.cell(w, 7, _safe(h), border=1, fill=True)
+    pdf.ln()
+
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Helvetica", "", 7)
+    for i, (_, row) in enumerate(df.iterrows()):
+        pdf.set_fill_color(245, 245, 245) if i % 2 == 0 else pdf.set_fill_color(255, 255, 255)
+        vals = [
+            str(row.get("Date & Time", ""))[:22],
+            str(row.get(id_col, ""))[:12],
+            str(row.get("Situation", ""))[:18],
+            str(row.get("Quality", ""))[:10],
+            str(row.get("Disease", ""))[:18],
+            str(row.get("Notes", "") or "")[:38],
+        ]
+        for val, w in zip(vals, widths):
+            pdf.cell(w, 6, _safe(val), border=1, fill=True)
+        pdf.ln()
+
+    return bytes(pdf.output())
 
 
 def _clean_status(val):
@@ -65,9 +113,12 @@ def show():
     st.subheader("📝 Complete Log Repository")
 
     export_cols = [c for c in reports_df.columns if c != 'photo']
-    csv = reports_df[export_cols].to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Export Full Logs to Excel/CSV", data=csv,
-                       file_name="mushroom_farm_reports.csv", mime="text/csv")
+    dl_col1, dl_col2 = st.columns(2)
+    with dl_col1:
+        csv = reports_df[export_cols].to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Export Full Logs (CSV)", data=csv,
+                           file_name="mushroom_farm_reports.csv", mime="text/csv",
+                           use_container_width=True)
 
     view_mode = st.radio("View table by:", ["Block", "Section"], horizontal=True)
 
@@ -96,6 +147,17 @@ def show():
         use_container_width=True,
         height=400
     )
+
+    with dl_col2:
+        pdf_df = display_df[[c for c in display_df.columns if c != "Delete?"]].copy()
+        pdf_bytes = _quality_pdf(pdf_df, view_mode)
+        st.download_button(
+            f"📄 Export Current View (PDF)",
+            data=pdf_bytes,
+            file_name=f"quality_report_{datetime.date.today()}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
 
     rows_to_delete = edited_df[edited_df["Delete?"] == True]
     if not rows_to_delete.empty:

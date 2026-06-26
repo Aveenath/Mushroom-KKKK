@@ -18,3 +18,4 @@ libsql-client
 streamlit_autorefresh
 bcrypt
 cloudinary
+fpdf2
