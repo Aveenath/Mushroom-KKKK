@@ -48,7 +48,12 @@ def _esc(v):
 
 def fetch_smartsense():
     session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0"})
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/csv,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://didikhub.com/smartsense/pages/dashboard.php",
+    })
     session.post(LOGIN_URL, data={
         "username": os.environ["DIDIKHUB_USERNAME"],
         "password": os.environ["DIDIKHUB_PASSWORD"],
