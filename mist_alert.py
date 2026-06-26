@@ -18,35 +18,24 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 # ── Turso helpers ──────────────────────────────────────────────────────────────
 
-def _turso_arg(value):
-    if value is None:
-        return {"type": "null"}
-    if isinstance(value, int):
-        return {"type": "integer", "value": value}
-    if isinstance(value, float):
-        return {"type": "float", "value": value}
-    return {"type": "text", "value": str(value)}
+def _esc(v):
+    if v is None or str(v).strip() == "":
+        return "NULL"
+    return "'" + str(v).replace("'", "''") + "'"
 
 
-def query_turso(sql, params=None):
+def query_turso(sql):
     raw_url    = os.environ["TURSO_DATABASE_URL"]
     auth_token = os.environ["TURSO_AUTH_TOKEN"]
     base_url   = raw_url.replace("libsql://", "https://").rstrip("/")
     endpoint   = f"{base_url}/v2/pipeline"
-    stmt       = {"sql": sql}
-    if params:
-        stmt["args"] = [_turso_arg(p) for p in params]
-    payload = {"requests": [{"type": "execute", "stmt": stmt}, {"type": "close"}]}
+    payload = {"requests": [{"type": "execute", "stmt": {"sql": sql}}, {"type": "close"}]}
     headers = {"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"}
     resp    = requests.post(endpoint, json=payload, headers=headers, timeout=15)
     resp.raise_for_status()
     result = resp.json()["results"][0]["response"]["result"]
     cols   = [c["name"] for c in result["cols"]]
     return [dict(zip(cols, [v["value"] for v in row])) for row in result["rows"]]
-
-
-def execute_turso(sql, params=None):
-    query_turso(sql, params)
 
 
 # ── Telegram ───────────────────────────────────────────────────────────────────
@@ -90,7 +79,7 @@ REASON: one short sentence why"""
 # ── Alert state (throttle) ─────────────────────────────────────────────────────
 
 def _init_alert_table():
-    execute_turso(
+    query_turso(
         "CREATE TABLE IF NOT EXISTS alert_state "
         "(alert_type TEXT PRIMARY KEY, last_status TEXT, last_sent TEXT)"
     )
@@ -98,18 +87,16 @@ def _init_alert_table():
 
 def _get_state(alert_type):
     rows = query_turso(
-        "SELECT last_status, last_sent FROM alert_state WHERE alert_type = ?",
-        [alert_type]
+        f"SELECT last_status, last_sent FROM alert_state WHERE alert_type = {_esc(alert_type)}"
     )
     return rows[0] if rows else None
 
 
 def _set_state(alert_type, status):
     now_str = datetime.datetime.utcnow().isoformat()
-    execute_turso(
-        "INSERT INTO alert_state (alert_type, last_status, last_sent) VALUES (?, ?, ?) "
-        "ON CONFLICT(alert_type) DO UPDATE SET last_status = excluded.last_status, last_sent = excluded.last_sent",
-        [alert_type, status, now_str]
+    query_turso(
+        f"INSERT INTO alert_state (alert_type, last_status, last_sent) VALUES ({_esc(alert_type)}, {_esc(status)}, {_esc(now_str)}) "
+        f"ON CONFLICT(alert_type) DO UPDATE SET last_status = excluded.last_status, last_sent = excluded.last_sent"
     )
 
 
@@ -233,8 +220,22 @@ def main():
             )
             _set_state("misting", status)
     else:
-        print(f"Humidity {humidity}% and Temp {temp}°C within normal range. No mist alert.")
-        _set_state("misting", "NORMAL")
+        # Only clear misting alert after conditions have been normal for REMIND_HOURS.
+        # This prevents a brief good reading from resetting the 30-min reminder timer.
+        mist_state = _get_state("misting")
+        if mist_state and mist_state["last_status"] not in ("NORMAL", None):
+            try:
+                last_dt  = datetime.datetime.fromisoformat(str(mist_state["last_sent"]))
+                hours_ok = (datetime.datetime.utcnow() - last_dt).total_seconds() / 3600
+                if hours_ok >= REMIND_HOURS:
+                    _set_state("misting", "NORMAL")
+                    print(f"Conditions normal for {hours_ok:.1f}h — misting alert cleared.")
+                else:
+                    print(f"Conditions normal but holding misting alert — will clear in {(REMIND_HOURS - hours_ok)*60:.0f} min.")
+            except Exception:
+                _set_state("misting", "NORMAL")
+        else:
+            print(f"Humidity {humidity}% and Temp {temp}°C — conditions normal.")
 
     # ── 3. Harvest due alert ───────────────────────────────────────────────────
     try:
