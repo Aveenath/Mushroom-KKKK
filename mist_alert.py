@@ -1,7 +1,7 @@
 """
-Background alert script — run by GitHub Actions every 30 minutes.
-Sends: misting alerts, harvest-due alerts, stale data warnings.
-Throttled: same alert won't repeat until condition resets or 2 hours pass.
+Background alert script — run by GitHub Actions every 1 hour.
+Sends: misting alerts, stale data warnings.
+Throttled: same alert won't repeat until condition resets or REMIND_HOURS pass.
 """
 import os
 import datetime
@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from groq import Groq
 
 DATA_STALE_HOURS  = 1.0  # warn if sensor data older than 1 hour
-REMIND_HOURS      = 0.5  # re-send alert every 30 minutes if problem not fixed
+REMIND_HOURS      = 1.0  # re-send alert every 1 hour if problem not fixed
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
@@ -237,32 +237,14 @@ def main():
         else:
             print(f"Humidity {humidity}% and Temp {temp}°C — conditions normal.")
 
-    # ── 3. Harvest due alert ───────────────────────────────────────────────────
-    try:
-        due_today, overdue = _get_harvest_due()
-        lines = []
-        for block_id, date in due_today:
-            lines.append(f"  🟢 <b>{block_id}</b> — due TODAY ({date})")
-        for block_id, date, days in overdue:
-            lines.append(f"  🔴 <b>{block_id}</b> — overdue by {days} day(s) (was {date})")
-
-        if lines:
-            harvest_key      = ",".join(sorted([b for b, _ in due_today] + [b for b, *_ in overdue]))
-            send_it, reason  = _should_send(harvest_key, _get_state("harvest"))
-            print(f"Harvest: {len(lines)} block(s) due | Send={send_it} | {reason}")
-            if send_it:
-                send_telegram(
-                    f"🍄 <b>Harvest Due Alert</b>\n\n"
-                    f"🕐 {now_myt} MYT\n\n"
-                    + "\n".join(lines) +
-                    "\n\nPlease harvest these blocks as soon as possible."
-                )
-                _set_state("harvest", harvest_key)
-        else:
-            print("No blocks due for harvest today.")
-            _set_state("harvest", "NONE")
-    except Exception as e:
-        print(f"Harvest check failed: {e}")
+    # ── 3. Harvest due alert (disabled) ───────────────────────────────────────
+    # Uncomment below to re-enable harvest notifications
+    # try:
+    #     due_today, overdue = _get_harvest_due()
+    #     ...
+    # except Exception as e:
+    #     print(f"Harvest check failed: {e}")
+    pass
 
 
 if __name__ == "__main__":
