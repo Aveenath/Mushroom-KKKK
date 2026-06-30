@@ -109,11 +109,14 @@ def _evaluate_conditions(temp, humidity, co2):
     }
 
 
-def _build_prompt(temp, humidity, co2, latest_ts, conditions):
+def _build_prompt(temp, humidity, co2, latest_ts, conditions, lang="English"):
     """Assemble the full Groq prompt."""
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     return f"""You are an expert grey oyster mushroom farm advisor responsible for equipment recommendations.
+
+IMPORTANT: Respond entirely in {lang}. All text in the JSON values must be in {lang}.
+
 
 Current time   : {now}
 Latest reading : {latest_ts}
@@ -183,7 +186,7 @@ Respond in valid JSON only. No text outside the JSON.
 }}"""
 
 
-def get_monitor_advice(username=None):
+def get_monitor_advice(username=None, lang="English"):
     """
     Pull the latest sensor reading, send to Groq for equipment recommendations.
 
@@ -209,7 +212,7 @@ def get_monitor_advice(username=None):
 
     temp, humidity, co2, latest_ts, _ = reading
     conditions = _evaluate_conditions(temp, humidity, co2)
-    prompt     = _build_prompt(temp, humidity, co2, latest_ts, conditions)
+    prompt     = _build_prompt(temp, humidity, co2, latest_ts, conditions, lang)
 
     # ── Groq API call ──────────────────────────────────────────────────────────
     try:

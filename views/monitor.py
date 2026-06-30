@@ -114,8 +114,19 @@ def show():
     st.markdown("---")
     st.subheader("🤖 AI Equipment Recommendation")
 
+    LANG_OPTIONS = ["English", "BM", "Mandarin", "Tamil", "Japanese"]
+    if "groq_lang" not in st.session_state:
+        st.session_state.groq_lang = "English"
+
+    st.session_state.groq_lang = st.selectbox(
+        "🌐 AI Response Language",
+        LANG_OPTIONS,
+        index=LANG_OPTIONS.index(st.session_state.groq_lang),
+        key="lang_monitor"
+    )
+
     # Only call Groq when sensor values actually change — not on every refresh
-    sensor_key = f"{latest['temp']}_{latest['humidity']}_{latest['co2']}"
+    sensor_key = f"{latest['temp']}_{latest['humidity']}_{latest['co2']}_{st.session_state.groq_lang}"
 
     if (
         "monitor_sensor_key" not in st.session_state
@@ -124,7 +135,7 @@ def show():
     ):
         from groq_monitor import get_monitor_advice
         with st.spinner("🤖 Getting AI recommendation..."):
-            result, error = get_monitor_advice()
+            result, error = get_monitor_advice(lang=st.session_state.groq_lang)
         st.session_state.monitor_sensor_key = sensor_key
         st.session_state.monitor_result     = result
         st.session_state.monitor_error      = error
