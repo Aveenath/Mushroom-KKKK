@@ -19,3 +19,4 @@ streamlit_autorefresh
 bcrypt
 cloudinary
 fpdf2
+pytest  # dev/testing only
