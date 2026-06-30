@@ -9,33 +9,12 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 from groq import Groq
+from db_common import query_turso, init_state_table, get_state, set_state
 
 DATA_STALE_HOURS  = 1.0  # warn if sensor data older than 1 hour
 REMIND_HOURS      = 1.0  # re-send alert every 1 hour if problem not fixed
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
-
-
-# ── Turso helpers ──────────────────────────────────────────────────────────────
-
-def _esc(v):
-    if v is None or str(v).strip() == "":
-        return "NULL"
-    return "'" + str(v).replace("'", "''") + "'"
-
-
-def query_turso(sql):
-    raw_url    = os.environ["TURSO_DATABASE_URL"]
-    auth_token = os.environ["TURSO_AUTH_TOKEN"]
-    base_url   = raw_url.replace("libsql://", "https://").rstrip("/")
-    endpoint   = f"{base_url}/v2/pipeline"
-    payload = {"requests": [{"type": "execute", "stmt": {"sql": sql}}, {"type": "close"}]}
-    headers = {"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"}
-    resp    = requests.post(endpoint, json=payload, headers=headers, timeout=15)
-    resp.raise_for_status()
-    result = resp.json()["results"][0]["response"]["result"]
-    cols   = [c["name"] for c in result["cols"]]
-    return [dict(zip(cols, [v.get("value") for v in row])) for row in result["rows"]]
 
 
 # ── Telegram ───────────────────────────────────────────────────────────────────
@@ -78,28 +57,6 @@ REASON: one short sentence why"""
 
 # ── Alert state (throttle) ─────────────────────────────────────────────────────
 
-def _init_alert_table():
-    query_turso(
-        "CREATE TABLE IF NOT EXISTS alert_state "
-        "(alert_type TEXT PRIMARY KEY, last_status TEXT, last_sent TEXT)"
-    )
-
-
-def _get_state(alert_type):
-    rows = query_turso(
-        f"SELECT last_status, last_sent FROM alert_state WHERE alert_type = {_esc(alert_type)}"
-    )
-    return rows[0] if rows else None
-
-
-def _set_state(alert_type, status):
-    now_str = datetime.datetime.utcnow().isoformat()
-    query_turso(
-        f"INSERT INTO alert_state (alert_type, last_status, last_sent) VALUES ({_esc(alert_type)}, {_esc(status)}, {_esc(now_str)}) "
-        f"ON CONFLICT(alert_type) DO UPDATE SET last_status = excluded.last_status, last_sent = excluded.last_sent"
-    )
-
-
 def _should_send(current_status, state):
     """
     Returns (send: bool, reason: str).
@@ -118,6 +75,42 @@ def _should_send(current_status, state):
     except Exception:
         return True, "could not parse last_sent"
     return False, f"throttled — same status '{current_status}' sent {hours_ago:.1f}h ago"
+
+
+def _misting_decision(temp, humidity):
+    """Returns 'MIST ON', 'MIST OFF', or None based on threshold rules."""
+    needs_on  = humidity < 80.0 or temp > 30.0
+    needs_off = humidity > 90.0
+    if needs_on:
+        return "MIST ON"
+    if needs_off:
+        return "MIST OFF"
+    return None
+
+
+def _heartbeat_update(state, today_str):
+    """
+    Tracks how many times the script has run today.
+    Returns (new_status_to_save, message_or_None).
+    A message is only returned once — on the first run of a new day — summarizing
+    yesterday's run count. This is a dead-man's-switch: if cron-job.org or GitHub
+    Actions itself stops working, this daily message stops arriving too, which is
+    the signal that the whole pipeline (not just a sensor) needs checking.
+    """
+    if state is None:
+        return f"{today_str}|1", None
+    prev_date, _, prev_count = state["last_status"].partition("|")
+    if prev_date == today_str:
+        return f"{today_str}|{int(prev_count) + 1}", None
+    message = f"💓 <b>Daily Heartbeat</b>\n\nSystem checked in <b>{prev_count}</b> time(s) on {prev_date}."
+    return f"{today_str}|1", message
+
+
+def _stale_cause_message(sync_state):
+    """Explains *why* sensor data is stale: our sync script crashed, or the device is offline."""
+    if sync_state and str(sync_state["last_status"]).startswith("ERROR"):
+        return f"Sync script crashed: <code>{sync_state['last_status']}</code>"
+    return "Sync is running fine, but no new data has arrived — the sensor device itself may be offline."
 
 
 # ── Harvest due check ──────────────────────────────────────────────────────────
@@ -150,8 +143,14 @@ def _get_harvest_due():
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    _init_alert_table()
-    now_myt = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+    init_state_table()
+    now_myt   = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+    today_myt = now_myt.split(" ")[0]
+
+    new_heartbeat, heartbeat_msg = _heartbeat_update(get_state("heartbeat"), today_myt)
+    if heartbeat_msg:
+        send_telegram(heartbeat_msg)
+    set_state("heartbeat", new_heartbeat)
 
     # ── 1. Sensor freshness ────────────────────────────────────────────────────
     rows = query_turso("SELECT temp, humidity, co2, ts FROM sensors ORDER BY ts DESC LIMIT 1")
@@ -171,14 +170,15 @@ def main():
         age_hours = (datetime.datetime.utcnow() - ts_dt).total_seconds() / 3600
         if age_hours > DATA_STALE_HOURS:
             age_label  = f"{int(age_hours * 60)} min" if age_hours < 1 else f"{age_hours:.1f}h"
-            send_it, r = _should_send("STALE", _get_state("stale"))
+            send_it, r = _should_send("STALE", get_state("stale"))
             if send_it:
+                cause_line = _stale_cause_message(get_state("sync"))
                 send_telegram(
                     f"⚠️ <b>Sensor Data Stale</b>\n\n"
                     f"Last reading was <b>{age_label} ago</b>.\n"
-                    f"Auto-sync may have failed. Please check the sensor connection."
+                    f"{cause_line}"
                 )
-                _set_state("stale", "STALE")
+                set_state("stale", "STALE")
                 print(f"Stale alert sent ({age_label} old). {r}")
             else:
                 print(f"Stale alert throttled. {r}")
@@ -186,17 +186,15 @@ def main():
     except Exception as e:
         print(f"Could not parse timestamp: {e}")
 
-    _set_state("stale", "FRESH")
+    set_state("stale", "FRESH")
 
     # ── 2. Misting alert ───────────────────────────────────────────────────────
-    needs_on  = humidity < 80.0 or temp > 30.0
-    needs_off = humidity > 90.0
+    status = _misting_decision(temp, humidity)
 
-    if needs_on or needs_off:
-        status = "MIST ON" if needs_on else "MIST OFF"
-        emoji  = "💧" if needs_on else "✅"
+    if status:
+        emoji = "💧" if status == "MIST ON" else "✅"
 
-        send_it, reason = _should_send(status, _get_state("misting"))
+        send_it, reason = _should_send(status, get_state("misting"))
         print(f"Misting: {status} | Send={send_it} | {reason}")
 
         if send_it:
@@ -218,22 +216,22 @@ def main():
                 f"<b>Action: {status}</b>\n"
                 f"Reason: {reason_text}"
             )
-            _set_state("misting", status)
+            set_state("misting", status)
     else:
         # Only clear misting alert after conditions have been normal for REMIND_HOURS.
         # This prevents a brief good reading from resetting the 30-min reminder timer.
-        mist_state = _get_state("misting")
+        mist_state = get_state("misting")
         if mist_state and mist_state["last_status"] not in ("NORMAL", None):
             try:
                 last_dt  = datetime.datetime.fromisoformat(str(mist_state["last_sent"]))
                 hours_ok = (datetime.datetime.utcnow() - last_dt).total_seconds() / 3600
                 if hours_ok >= REMIND_HOURS:
-                    _set_state("misting", "NORMAL")
+                    set_state("misting", "NORMAL")
                     print(f"Conditions normal for {hours_ok:.1f}h — misting alert cleared.")
                 else:
                     print(f"Conditions normal but holding misting alert — will clear in {(REMIND_HOURS - hours_ok)*60:.0f} min.")
             except Exception:
-                _set_state("misting", "NORMAL")
+                set_state("misting", "NORMAL")
         else:
             print(f"Humidity {humidity}% and Temp {temp}°C — conditions normal.")
 
