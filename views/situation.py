@@ -18,7 +18,7 @@ def _upload_photo(photo_bytes):
     result = cloudinary.uploader.upload(photo_bytes, folder="mushroom_farm", resource_type="image")
     return result["secure_url"]
 
-SECTION_OPTIONS = [f"S{i}" for i in range(1, 19)]  # S1–S18
+SECTION_OPTIONS = [f"{letter}{i}{j}" for letter in "AB" for i in range(1, 4) for j in range(1, 4)]  # A11–B33
 
 
 def _normalize_block(block_id):
@@ -78,7 +78,7 @@ def show():
             selected_block = st.text_input("Block ID", placeholder="e.g. B1, B099, B244")
             selected_section = "-"
         else:
-            selected_section = st.selectbox("Section (S1–S18)", SECTION_OPTIONS)
+            selected_section = st.selectbox("Section (A11–B33)", SECTION_OPTIONS)
             selected_block = "-"
 
         # --- Situation ---
