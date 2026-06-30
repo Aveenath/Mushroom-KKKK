@@ -48,6 +48,17 @@ def _init_db():
                  (block_id TEXT, species TEXT, planted_date TEXT, notes TEXT, predicted_harvest TEXT, username TEXT)''')
     conn.execute('''CREATE TABLE IF NOT EXISTS ai_harvest_logs
                  (timestamp TEXT, filename TEXT, young INTEGER, ready INTEGER, old INTEGER, total_clusters INTEGER, username TEXT)''')
+    for _col in [
+        "ALTER TABLE ai_harvest_logs ADD COLUMN original_url TEXT",
+        "ALTER TABLE ai_harvest_logs ADD COLUMN analyzed_url TEXT",
+        "ALTER TABLE ai_harvest_logs ADD COLUMN section_id TEXT DEFAULT '-'",
+        "ALTER TABLE ai_harvest_logs RENAME COLUMN old TO overripe",
+    ]:
+        try:
+            conn.execute(_col)
+            conn.commit()
+        except Exception:
+            pass
     conn.execute('''CREATE TABLE IF NOT EXISTS harvest_history
                  (block_id TEXT, harvest_number INTEGER, harvest_date TEXT, username TEXT)''')
     conn.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT)''')

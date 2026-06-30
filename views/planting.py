@@ -107,10 +107,20 @@ def show():
     st.markdown("---")
     st.subheader("🤖 AI Harvest Advisor")
 
+    LANG_OPTIONS = ["English", "BM", "Mandarin", "Tamil", "Japanese"]
+    if "groq_lang" not in st.session_state:
+        st.session_state.groq_lang = "English"
+    st.session_state.groq_lang = st.selectbox(
+        "🌐 AI Response Language",
+        LANG_OPTIONS,
+        index=LANG_OPTIONS.index(st.session_state.groq_lang),
+        key="lang_planting"
+    )
+
     if st.button("🔮 Get AI Recommendation", type="primary"):
         with st.spinner("Getting AI harvest recommendations..."):
             from groq_advisor import get_harvest_advice
-            ai_result, ai_error = get_harvest_advice(st.session_state.username)
+            ai_result, ai_error = get_harvest_advice(st.session_state.username, lang=st.session_state.groq_lang)
 
         if ai_error:
             st.error(f"❌ {ai_error}")

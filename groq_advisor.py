@@ -193,9 +193,12 @@ def _compute_blocks(blocks, today, flags):
     return result
 
 
-def _build_advice_prompt(today, sensor_text, flags):
+def _build_advice_prompt(today, sensor_text, flags, lang="English"):
     """Prompt ONLY for the environment advice paragraph — no block math."""
     return f"""You are an expert grey oyster mushroom farm advisor.
+
+IMPORTANT: Respond entirely in {lang}. All text in the JSON values must be in {lang}.
+
 
 Today: {today}
 
@@ -222,7 +225,7 @@ Respond in valid JSON only. No text outside the JSON.
 }}"""
 
 
-def get_harvest_advice(username):
+def get_harvest_advice(username, lang="English"):
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         return None, "GROQ_API_KEY not found in .env file."
@@ -247,7 +250,7 @@ def get_harvest_advice(username):
     # ── Groq only for the advice paragraph ────────────────────────────────────
     try:
         client  = Groq(api_key=api_key)
-        prompt  = _build_advice_prompt(today, sensor_text, flags)
+        prompt  = _build_advice_prompt(today, sensor_text, flags, lang=lang)
         response = client.chat.completions.create(
             model           = "llama-3.3-70b-versatile",
             messages        = [{"role": "user", "content": prompt}],
