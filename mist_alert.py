@@ -29,22 +29,20 @@ def send_telegram(message):
 
 # ── Groq ───────────────────────────────────────────────────────────────────────
 
-def ask_groq(temp, humidity, co2):
+def ask_groq(humidity, co2):
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
     prompt = f"""You are an oyster mushroom farm controller.
 Current readings:
-- Temperature : {temp}°C  (optimal: 25–28°C, max: 30°C)
-- Humidity    : {humidity}%  (optimal: 80–90%, min: 80%)
-- CO2         : {co2} ppm  (max: 800 ppm)
+- Humidity : {humidity}%  (optimal: 80–90%)
+- CO2      : {co2} ppm  (max: 800 ppm)
 
 Rules:
 - humidity < 80%: MIST ON
+- humidity 80–90%: MIST MAINTAIN
 - humidity > 90%: MIST OFF
-- temp > 30°C: MIST ON
-- Otherwise: no action needed
 
 Reply in exactly 2 lines:
-ACTION: MIST ON or MIST OFF
+ACTION: MIST ON or MIST MAINTAIN or MIST OFF
 REASON: one short sentence why"""
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
@@ -77,15 +75,13 @@ def _should_send(current_status, state):
     return False, f"throttled — same status '{current_status}' sent {hours_ago:.1f}h ago"
 
 
-def _misting_decision(temp, humidity):
-    """Returns 'MIST ON', 'MIST OFF', or None based on threshold rules."""
-    needs_on  = humidity < 80.0 or temp > 30.0
-    needs_off = humidity > 90.0
-    if needs_on:
+def _misting_decision(humidity):
+    """Returns 'MIST ON', 'MIST MAINTAIN', or 'MIST OFF' based on humidity."""
+    if humidity < 80.0:
         return "MIST ON"
-    if needs_off:
+    if humidity > 90.0:
         return "MIST OFF"
-    return None
+    return "MIST MAINTAIN"
 
 
 def _heartbeat_update(state, today_str):
@@ -189,51 +185,35 @@ def main():
     set_state("stale", "FRESH")
 
     # ── 2. Misting alert ───────────────────────────────────────────────────────
-    status = _misting_decision(temp, humidity)
+    status = _misting_decision(humidity)
 
-    if status:
-        emoji = "💧" if status == "MIST ON" else "✅"
+    emoji_map = {"MIST ON": "💧", "MIST MAINTAIN": "✅", "MIST OFF": "🚫"}
+    emoji = emoji_map.get(status, "💧")
 
-        send_it, reason = _should_send(status, get_state("misting"))
-        print(f"Misting: {status} | Send={send_it} | {reason}")
+    send_it, reason = _should_send(status, get_state("misting"))
+    print(f"Misting: {status} | Send={send_it} | {reason}")
 
-        if send_it:
-            reason_text = "Sensor thresholds breached — check misting system."
-            try:
-                groq_reply  = ask_groq(temp, humidity, co2)
-                reason_line = next((l for l in groq_reply.splitlines() if l.startswith("REASON:")), "")
-                if reason_line:
-                    reason_text = reason_line.replace("REASON:", "").strip()
-            except Exception as e:
-                print(f"Groq unavailable ({e})")
+    if send_it:
+        reason_text = "Humidity threshold triggered — check misting system."
+        try:
+            groq_reply  = ask_groq(humidity, co2)
+            reason_line = next((l for l in groq_reply.splitlines() if l.startswith("REASON:")), "")
+            if reason_line:
+                reason_text = reason_line.replace("REASON:", "").strip()
+        except Exception as e:
+            print(f"Groq unavailable ({e})")
 
-            send_telegram(
-                f"{emoji} <b>Mushroom Farm Misting Alert</b>\n\n"
-                f"🕐 Time: {now_myt} MYT\n"
-                f"🌡️ Temp: {temp}°C\n"
-                f"💧 Humidity: {humidity}%\n"
-                f"🌿 CO2: {co2} ppm\n\n"
-                f"<b>Action: {status}</b>\n"
-                f"Reason: {reason_text}"
-            )
-            set_state("misting", status)
+        send_telegram(
+            f"{emoji} <b>Mushroom Farm Misting Alert</b>\n\n"
+            f"🕐 Time: {now_myt} MYT\n"
+            f"💧 Humidity: {humidity}%\n"
+            f"🌿 CO2: {co2} ppm\n\n"
+            f"<b>Action: {status}</b>\n"
+            f"Reason: {reason_text}"
+        )
+        set_state("misting", status)
     else:
-        # Only clear misting alert after conditions have been normal for REMIND_HOURS.
-        # This prevents a brief good reading from resetting the 30-min reminder timer.
-        mist_state = get_state("misting")
-        if mist_state and mist_state["last_status"] not in ("NORMAL", None):
-            try:
-                last_dt  = datetime.datetime.fromisoformat(str(mist_state["last_sent"]))
-                hours_ok = (datetime.datetime.utcnow() - last_dt).total_seconds() / 3600
-                if hours_ok >= REMIND_HOURS:
-                    set_state("misting", "NORMAL")
-                    print(f"Conditions normal for {hours_ok:.1f}h — misting alert cleared.")
-                else:
-                    print(f"Conditions normal but holding misting alert — will clear in {(REMIND_HOURS - hours_ok)*60:.0f} min.")
-            except Exception:
-                set_state("misting", "NORMAL")
-        else:
-            print(f"Humidity {humidity}% and Temp {temp}°C — conditions normal.")
+        print(f"Humidity {humidity}% — status '{status}', throttled.")
 
     # ── 3. Harvest due alert (disabled) ───────────────────────────────────────
     # Uncomment below to re-enable harvest notifications

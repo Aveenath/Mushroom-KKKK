@@ -9,42 +9,6 @@ def _safe(text):
     return str(text).encode('latin-1', errors='ignore').decode('latin-1')
 
 
-def _build_schedule_pdf(schedule_df):
-    from fpdf import FPDF
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=10)
-    pdf.add_page()
-    pdf.set_margins(10, 10, 10)
-
-    pdf.set_font("Helvetica", "B", 15)
-    pdf.cell(0, 10, _safe("Full Harvest Schedule"), ln=True)
-    pdf.set_font("Helvetica", "", 9)
-    pdf.cell(0, 5, _safe(f"Generated: {datetime.date.today()}"), ln=True)
-    pdf.ln(4)
-
-    df = schedule_df.drop(columns=['Days Left'])
-    headers = list(df.columns)
-    # Block ID, Cycle, Planted, Harvests Done, Last Harvest, Next Harvest, Status
-    widths  = [25, 15, 28, 30, 28, 28, 36]
-
-    pdf.set_fill_color(76, 175, 80)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Helvetica", "B", 8)
-    for h, w in zip(headers, widths):
-        pdf.cell(w, 7, _safe(str(h)), border=1, fill=True)
-    pdf.ln()
-
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font("Helvetica", "", 8)
-    for i, (_, row) in enumerate(df.iterrows()):
-        pdf.set_fill_color(245, 245, 245) if i % 2 == 0 else pdf.set_fill_color(255, 255, 255)
-        for val, w in zip(row, widths):
-            pdf.cell(w, 6, _safe(str(val)[:18]), border=1, fill=True)
-        pdf.ln()
-
-    return bytes(pdf.output())
-
-
 def _build_harvest_pdf(norm_id, cycle, species, planted_date, display_rows, sit_df, raw_weights):
     from fpdf import FPDF
     pdf = FPDF()
@@ -179,34 +143,109 @@ def _calc_predicted_dates(planted_date_str, history_df, total_harvests):
     return predicted
 
 
-def _build_schedule(username):
+def _build_full_report(username):
     conn = get_db_connection()
     try:
-        df_all = db_read_sql(
-            "SELECT * FROM planting_records WHERE username = ? ORDER BY block_id",
+        pr_df = db_read_sql(
+            "SELECT block_id, cycle, planted_date, harvest_count, last_harvest_date, retired "
+            "FROM planting_records WHERE username = ? ORDER BY block_id, cycle ASC",
+            conn, params=(username,)
+        )
+        hist_df = db_read_sql(
+            "SELECT block_id, cycle, harvest_number, harvest_date FROM harvest_history "
+            "WHERE username = ? ORDER BY block_id, cycle, harvest_number ASC",
+            conn, params=(username,)
+        )
+        sit_df = db_read_sql(
+            "SELECT block_id, status, quality FROM situation_reports "
+            "WHERE username = ? ORDER BY date DESC",
             conn, params=(username,)
         )
     finally:
         conn.close()
-    if df_all.empty:
+
+    if pr_df.empty:
         return pd.DataFrame()
+
+    # Keep only the latest cycle per block
+    pr_df = (
+        pr_df.sort_values(['block_id', 'cycle'])
+             .groupby('block_id', as_index=False)
+             .last()
+    )
+
+    # Latest situation per block
+    latest_sit = {}
+    for _, row in sit_df.iterrows():
+        bid = str(row['block_id'])
+        if bid not in latest_sit:
+            quality = str(row.get('quality') or '').strip()
+            status  = str(row.get('status')  or '').strip()
+            latest_sit[bid] = f"{status} / {quality}" if quality and quality != 'None' else status
+
+    def _clean(v):
+        return v if (v is not None and pd.notna(v) and str(v).strip() not in ('', 'nan', 'None', 'NaT')) else None
+
     rows = []
-    for _, row in df_all.iterrows():
-        hc      = int(row.get('harvest_count') or 0)
-        lhd     = row.get('last_harvest_date') or None
-        retired = int(row.get('retired') or 0)
-        cycle   = int(row.get('cycle') or 1)
-        if retired:
-            rows.append({'Block ID': row['block_id'], 'Cycle': cycle, 'Planted': row['planted_date'],
-                         'Harvests Done': hc, 'Last Harvest': lhd or '-',
-                         'Next Harvest': '-', 'Days Left': 9999, 'Status': 'Retired'})
-        else:
-            next_date            = _get_next_harvest(row['planted_date'], hc, lhd)
-            status_label, days_left = _get_status(next_date)
-            rows.append({'Block ID': row['block_id'], 'Cycle': cycle, 'Planted': row['planted_date'],
-                         'Harvests Done': hc, 'Last Harvest': lhd or '-',
-                         'Next Harvest': str(next_date), 'Days Left': days_left, 'Status': status_label})
-    return pd.DataFrame(rows).sort_values('Days Left')
+    for _, pr in pr_df.iterrows():
+        hc        = int(pr.get('harvest_count') or 0)
+        lhd       = _clean(pr.get('last_harvest_date'))
+        retired   = int(pr.get('retired') or 0)
+        cycle     = int(pr.get('cycle') or 1)
+        bid       = str(pr['block_id'])
+        situation = latest_sit.get(bid, '-')
+
+        # Harvest history for this block + cycle
+        block_hist = hist_df[
+            (hist_df['block_id'].astype(str) == bid) &
+            (hist_df['cycle'].astype(str) == str(cycle))
+        ].copy() if not hist_df.empty else pd.DataFrame()
+
+        predicted_dates = _calc_predicted_dates(pr['planted_date'], block_hist, hc) if hc > 0 else []
+
+        # One row per completed harvest
+        for i in range(1, hc + 1):
+            predicted_str = str(predicted_dates[i - 1]) if i <= len(predicted_dates) else '-'
+            actual_str = '-'
+            if not block_hist.empty:
+                match = block_hist[block_hist['harvest_number'].astype(int) == i]
+                if not match.empty:
+                    actual_str = str(match.iloc[0]['harvest_date'])
+            if actual_str == '-' and i == hc and lhd:
+                actual_str = str(lhd)
+
+            rows.append({
+                'Block ID':               bid,
+                'Planted Date':           str(pr['planted_date']),
+                'Harvest #':              i,
+                'Actual Harvest Date':    actual_str,
+                'Predicted Harvest Date': predicted_str,
+                'Situation':              situation,
+            })
+
+        # Upcoming row for active blocks
+        if not retired:
+            try:
+                next_date = _get_next_harvest(pr['planted_date'], hc, str(lhd) if lhd else None)
+                rows.append({
+                    'Block ID':               bid,
+                    'Planted Date':           str(pr['planted_date']),
+                    'Harvest #':              f'{hc + 1} (Upcoming)',
+                    'Actual Harvest Date':    '-',
+                    'Predicted Harvest Date': str(next_date),
+                    'Situation':              situation,
+                })
+            except Exception:
+                pass
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df['_bid']  = df['Block ID'].apply(lambda x: int(re.sub(r'\D', '', x) or 0))
+    df['_hnum'] = df['Harvest #'].apply(lambda x: int(re.sub(r'\D', '', str(x).split(' ')[0]) or 0))
+    df = df.sort_values(['_bid', '_hnum']).drop(columns=['_bid', '_hnum'])
+    return df.reset_index(drop=True)
 
 
 def show():
@@ -214,10 +253,18 @@ def show():
 
     # ── SECTION 1: Block Harvest Detail ───────────────────────────────────────
     st.subheader("🔍 Block Harvest Detail")
-    search_id = st.text_input("Enter Block ID (e.g. B1, B5)")
+    search_id = st.text_input("Enter Block ID (e.g. B1, B5)", key="block_search_input")
+    do_search = st.button("🔍 Search")
 
-    if search_id.strip():
-        norm_id, err = _validate_and_normalize(search_id)
+    if do_search:
+        st.session_state['report_search_id'] = search_id.strip()
+    elif not search_id.strip():
+        st.session_state.pop('report_search_id', None)
+
+    active_search = st.session_state.get('report_search_id', '')
+
+    if active_search:
+        norm_id, err = _validate_and_normalize(active_search)
         if err:
             st.error(err)
         else:
@@ -420,68 +467,22 @@ def show():
                         st.success(f"✅ Block {norm_id} Cycle {cycle} deleted.")
                         st.rerun()
 
-    # ── SECTION 2: Full Harvest Schedule ──────────────────────────────────────
+    # ── SECTION 2: Full Report ─────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("📋 Full Harvest Schedule")
+    st.subheader("📋 Full Report")
 
-    if st.button("📂 View Full Schedule", type="primary"):
-        st.session_state['show_schedule'] = not st.session_state.get('show_schedule', False)
-
-    if st.session_state.get('show_schedule', False):
-        schedule_df = _build_schedule(st.session_state.username)
-
-        if schedule_df.empty:
+    if st.button("📊 View Full Report", type="primary"):
+        full_df = _build_full_report(st.session_state.username)
+        if full_df.empty:
             st.info("No planting records found.")
         else:
-            active_df  = schedule_df[schedule_df['Status'] != 'Retired'].copy()
-            retired_df = schedule_df[schedule_df['Status'] == 'Retired'].copy()
-
-            sch_col1, sch_col2 = st.columns(2)
-            with sch_col1:
-                csv_export = schedule_df.drop(columns=['Days Left']).to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "📥 Export Full Schedule (CSV)",
-                    data=csv_export,
-                    file_name=f"harvest_schedule_{get_local_now().date()}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-            with sch_col2:
-                sch_pdf = _build_schedule_pdf(schedule_df)
-                st.download_button(
-                    "📄 Export Full Schedule (PDF)",
-                    data=sch_pdf,
-                    file_name=f"harvest_schedule_{get_local_now().date()}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-
-            tab_active, tab_overdue, tab_week, tab_retired = st.tabs([
-                "All Active", "🔴 Overdue / Today", "🟡 This Week", "⬛ Retired"
-            ])
-
-            with tab_active:
-                if active_df.empty:
-                    st.info("No active blocks.")
-                else:
-                    st.dataframe(active_df.drop(columns=['Days Left']), hide_index=True, use_container_width=True)
-
-            with tab_overdue:
-                today_df = active_df[active_df['Days Left'] <= 0]
-                if today_df.empty:
-                    st.success("No blocks overdue or due today.")
-                else:
-                    st.dataframe(today_df.drop(columns=['Days Left']), hide_index=True, use_container_width=True)
-
-            with tab_week:
-                week_df = active_df[active_df['Days Left'].between(1, 7)]
-                if week_df.empty:
-                    st.info("No blocks due this week.")
-                else:
-                    st.dataframe(week_df.drop(columns=['Days Left']), hide_index=True, use_container_width=True)
-
-            with tab_retired:
-                if retired_df.empty:
-                    st.info("No retired blocks.")
-                else:
-                    st.dataframe(retired_df.drop(columns=['Days Left']), hide_index=True, use_container_width=True)
+            st.caption(f"{len(full_df)} record(s) — sorted by Block ID then Cycle")
+            with st.container(height=450):
+                st.dataframe(full_df, hide_index=True, use_container_width=True)
+            csv_export = full_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Export Full Report (CSV)",
+                data=csv_export,
+                file_name=f"full_report_{get_local_now().date()}.csv",
+                mime="text/csv",
+            )

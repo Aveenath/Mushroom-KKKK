@@ -44,7 +44,7 @@ def show():
         key="monitor_autorefresh"
     )
 
-    st.title("📊 Monitoring & AI Forecasting")
+    st.title("📊 Forecasting")
 
     # ── Sync from SmartSense ───────────────────────────────────────────────────
     try:
@@ -68,47 +68,6 @@ def show():
         return
 
     latest = df.iloc[-1]
-
-    # ── Internal Farm Sensors ─────────────────────────────────────────────────
-    st.subheader("🏠 Internal Farm Sensors")
-    try:
-        ts_myt = pd.to_datetime(latest['ts']) + pd.Timedelta(hours=8)
-        ts_display = ts_myt.strftime("%Y-%m-%d %H:%M:%S") + " MYT"
-    except Exception:
-        ts_display = str(latest['ts'])
-    st.caption(f"Latest reading: {ts_display}")
-
-    col1, col2, col3 = st.columns(3)
-
-    temp_val = float(latest['temp'])
-    hum_val  = float(latest['humidity'])
-    co2_val  = float(latest['co2'])
-
-    # Thresholds consistent with groq_advisor / groq_monitor
-    if 25 <= temp_val <= 28:
-        temp_status = "🟢 Normal"
-    elif temp_val <= 30:
-        temp_status = "🟡 Warning"
-    else:
-        temp_status = "🔴 Critical"
-
-    if 80 <= hum_val <= 90:
-        hum_status = "🟢 Normal"
-    elif hum_val >= 75:
-        hum_status = "🟡 Warning"
-    else:
-        hum_status = "🔴 Critical"
-
-    if co2_val < 800:
-        co2_status = "🟢 Normal"
-    elif co2_val < 1000:
-        co2_status = "🟡 Warning"
-    else:
-        co2_status = "🔴 Critical"
-
-    col1.metric("Internal Temp",     f"{latest['temp']}°C",    temp_status)
-    col2.metric("Internal Humidity", f"{latest['humidity']}%", hum_status)
-    col3.metric("Internal CO2",      f"{latest['co2']} ppm",   co2_status)
 
     # ── AI Equipment Recommendation ───────────────────────────────────────────
     st.markdown("---")

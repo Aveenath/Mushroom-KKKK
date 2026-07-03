@@ -60,16 +60,7 @@ def show():
     # ── Harvest alerts ─────────────────────────────────────────────────────────
     with col_left:
         st.subheader("🍄 Harvest Status")
-        if overdue_blocks:
-            for block_id, date, days in overdue_blocks:
-                st.error(f"**{block_id}** — overdue by **{days} day(s)** (was due {date})")
-        if due_today_blocks:
-            for block_id, date in due_today_blocks:
-                st.success(f"**{block_id}** — due **TODAY** ({date})")
-        if not overdue_blocks and not due_today_blocks:
-            st.success("No blocks overdue or due today.")
 
-        # Upcoming this week
         upcoming = []
         for _, row in active_df.iterrows():
             try:
@@ -83,10 +74,44 @@ def show():
                     upcoming.append((row['block_id'], next_date, diff))
             except Exception:
                 pass
-        if upcoming:
-            st.markdown("**📅 Due this week:**")
-            for block_id, date, days in sorted(upcoming, key=lambda x: x[2]):
-                st.info(f"**{block_id}** — in {days} day(s) ({date})")
+        upcoming = sorted(upcoming, key=lambda x: x[2])
+
+        LIMIT = 10
+        tab_overdue, tab_today, tab_week = st.tabs([
+            f"🔴 Overdue ({len(overdue_blocks)})",
+            f"✅ Due Today ({len(due_today_blocks)})",
+            f"📅 This Week ({len(upcoming)})",
+        ])
+
+        with tab_overdue:
+            if overdue_blocks:
+                with st.container(height=300):
+                    for block_id, date, days in overdue_blocks[:LIMIT]:
+                        st.error(f"**{block_id}** — overdue by **{days} day(s)** (was due {date})")
+                if len(overdue_blocks) > LIMIT:
+                    st.caption(f"Showing {LIMIT} of {len(overdue_blocks)} overdue blocks.")
+            else:
+                st.success("No overdue blocks.")
+
+        with tab_today:
+            if due_today_blocks:
+                with st.container(height=300):
+                    for block_id, date in due_today_blocks[:LIMIT]:
+                        st.success(f"**{block_id}** — due **TODAY** ({date})")
+                if len(due_today_blocks) > LIMIT:
+                    st.caption(f"Showing {LIMIT} of {len(due_today_blocks)} blocks due today.")
+            else:
+                st.info("No blocks due today.")
+
+        with tab_week:
+            if upcoming:
+                with st.container(height=300):
+                    for block_id, date, days in upcoming[:LIMIT]:
+                        st.info(f"**{block_id}** — in {days} day(s) ({date})")
+                if len(upcoming) > LIMIT:
+                    st.caption(f"Showing {LIMIT} of {len(upcoming)} blocks due this week.")
+            else:
+                st.info("No blocks due in the next 7 days.")
 
     # ── Live sensor snapshot ───────────────────────────────────────────────────
     with col_right:

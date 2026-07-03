@@ -203,7 +203,7 @@ if not st.session_state.logged_in:
 st.sidebar.markdown(f"**Welcome, {st.session_state.username}!**")
 page = st.sidebar.radio("Go to:", [
     "Dashboard",
-    "Live Monitor & Forecast",
+    "Forecasting",
     "Record Situation",
     "Record Planting",
     "Quality Analysis",
@@ -221,7 +221,7 @@ if st.sidebar.button("Log Out"):
 if page == "Dashboard":
     from views.dashboard import show
     show()
-elif page == "Live Monitor & Forecast":
+elif page == "Forecasting":
     from views.monitor import show
     show()
 elif page == "Record Situation":
