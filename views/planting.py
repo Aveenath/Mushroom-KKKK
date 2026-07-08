@@ -160,17 +160,15 @@ def show():
 
                 blocks_df["official_date"] = blocks_df["block_id"].apply(_official_date)
 
-                display_cols = ["block_id", "days_planted", "official_date",
-                                "est_harvest_date", "days_until_harvest", "Status", "reason"]
+                display_cols = ["block_id", "official_date",
+                                "est_harvest_date", "Status", "reason"]
                 display_cols = [c for c in display_cols if c in blocks_df.columns]
 
                 st.dataframe(
                     blocks_df[display_cols].rename(columns={
                         "block_id":           "Block",
-                        "days_planted":       "Days Grown",
                         "official_date":      "📅 Official Date",
                         "est_harvest_date":   "🤖 AI Adjusted Date",
-                        "days_until_harvest": "Days Until Harvest",
                         "reason":             "Reason",
                     }),
                     use_container_width=True,
@@ -179,19 +177,6 @@ def show():
                         "Reason": st.column_config.TextColumn("Reason", width="large"),
                     }
                 )
-                st.markdown(
-                    "<small>ℹ️ <b>📅 Official Date</b> = fixed schedule based on planting/harvest records.<br>"
-                    "<b>🤖 AI Adjusted Date</b> = estimate only, adjusted for current sensor conditions (CO2, humidity).<br>"
-                    "AI dates do <b>not</b> affect your official schedule.</small>",
-                    unsafe_allow_html=True
-                )
-
-                col1, col2, col3, col4 = st.columns(4)
-                counts = blocks_df["category"].value_counts()
-                col1.metric("🔴 Harvest Today", counts.get("HARVEST_TODAY", 0))
-                col2.metric("🟡 This Week",     counts.get("HARVEST_WEEK",  0))
-                col3.metric("🟢 Monitor",        counts.get("MONITOR",       0))
-                col4.metric("⬛ Wait",           counts.get("WAIT",          0))
             else:
                 st.info("No block predictions returned.")
 

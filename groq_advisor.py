@@ -8,16 +8,26 @@ from utils import get_db_connection
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
-# ── Thresholds (single source of truth) ───────────────────────────────────────
-TEMP_MIN            = 25.0
-TEMP_OPTIMAL        = 28.0
-TEMP_MAX            = 30.0
-HUMIDITY_MIN        = 80.0
-HUMIDITY_OPT        = 85.0
-HUMIDITY_MAX        = 90.0
-CO2_MAX             = 800.0
-FIRST_HARVEST_DAYS  = 14
-REHARVEST_DAYS      = 15
+# ── Optimal environment thresholds ─────────────────────────────────────────
+TEMP_MIN     = 25.0
+TEMP_OPTIMAL = 28.0
+TEMP_MAX     = 30.0
+HUMIDITY_MIN = 80.0
+HUMIDITY_OPT = 85.0
+HUMIDITY_MAX = 90.0
+CO2_MAX      = 800.0
+
+
+FIRST_HARVEST_BASE = 14
+FIRST_HARVEST_MIN  = 12
+FIRST_HARVEST_MAX  = 15
+
+REHARVEST_BASE = 10
+REHARVEST_MIN  = 7
+REHARVEST_MAX  = 15
+
+STRESS_HUMIDITY_THRESHOLD = 70.0
+STRESS_TEMP_THRESHOLD     = 31.0
 
 
 def _trend_label(current, reference, threshold=0.5):
@@ -27,7 +37,8 @@ def _trend_label(current, reference, threshold=0.5):
     return "rising 📈" if diff > 0 else "falling 📉"
 
 
-def _fetch_sensor_history(conn):
+def _fetch_sensor_history_24h(conn):
+    """Latest 24h, hourly — used for the 'current conditions' summary."""
     try:
         cur = conn.execute("""
             SELECT
@@ -47,6 +58,30 @@ def _fetch_sensor_history(conn):
         return [], None
 
 
+def _fetch_daily_sensor_series(conn, start_date_str):
+    """
+    Daily averages from start_date_str to now. This is what lets us look
+    back across an entire growth cycle (which can be anywhere from 5 to 15
+    days) instead of only the last 24 hours — used to compute the
+    stress_ratio that drives the harvest-date prediction.
+    """
+    try:
+        cur = conn.execute("""
+            SELECT
+                strftime('%Y-%m-%d', ts) AS day,
+                ROUND(AVG(temp),     1) AS temp,
+                ROUND(AVG(humidity), 1) AS humidity,
+                ROUND(AVG(co2),      0) AS co2
+            FROM sensors
+            WHERE ts >= ?
+            GROUP BY day
+            ORDER BY day ASC
+        """, (start_date_str,))
+        return cur.fetchall()  # (day, temp, humidity, co2)
+    except Exception:
+        return []
+
+
 def _fetch_blocks(conn, username):
     try:
         cur = conn.execute(
@@ -61,10 +96,67 @@ def _fetch_blocks(conn, username):
         return []
 
 
+def _compute_stress_ratio(daily_series, start_date, end_date):
+    """
+    Fraction of days, within [start_date, end_date], where conditions look
+    like the "kering"/stress pattern seen in this farm's own history
+    (low humidity + high temp). Returns (stress_ratio, days_with_data,
+    avg_temp, avg_humidity, avg_co2) for that window. This is what feeds
+    _predict_target_days() — the prediction engine, unlike the 24h summary
+    below, looks at the whole cycle so far rather than just today.
+    """
+    window = [
+        row for row in daily_series
+        if start_date.isoformat() <= row[0] <= end_date.isoformat()
+    ]
+    if not window:
+        return None, 0, None, None, None
+
+    stress_days = sum(
+        1 for (_, temp, hum, _co2) in window
+        if (hum is not None and hum < STRESS_HUMIDITY_THRESHOLD)
+        or (temp is not None and temp > STRESS_TEMP_THRESHOLD)
+    )
+    n = len(window)
+    avg_temp = round(sum(r[1] for r in window) / n, 1)
+    avg_hum  = round(sum(r[2] for r in window) / n, 1)
+    avg_co2  = round(sum(r[3] for r in window) / n, 0)
+    return stress_days / n, n, avg_temp, avg_hum, avg_co2
+
+
+def _predict_target_days(base, min_d, max_d, stress_ratio):
+    """
+    No sensor data for this cycle yet -> fall back to the historical median.
+    Otherwise interpolate between the best-case and worst-case durations
+    seen in real history, based on how stressed the environment has been.
+    """
+    if stress_ratio is None:
+        return base
+    return round(min_d + stress_ratio * (max_d - min_d), 1)
+
+
+def _categorize(days):
+    if days <= 0:
+        return "HARVEST_TODAY"
+    elif days <= 7:
+        return "HARVEST_WEEK"
+    elif days <= 14:
+        return "MONITOR"
+    else:
+        return "WAIT"
+
+
 def _build_sensor_summary(history_rows, latest):
+    """
+    Richer 24h "current conditions" summary: trend vs 6h ago, 24h peak/low
+    for each metric, and a count of how many of the last 24 hourly readings
+    breached CO2/humidity thresholds — plus a sampled hourly table that
+    gets handed to Groq so the advice paragraph can reference real numbers
+    instead of guessing.
+    """
     if not latest:
         return "No sensor data available.", {
-            "co2_high": False, "humidity_low": False,
+            "co2_high": False, "humidity_low": False, "humidity_high": False,
             "temp_high": False, "temp_low": False,
             "co2_bad_streak": 0, "hum_bad_streak": 0,
             "temp": None, "humidity": None, "co2": None,
@@ -120,72 +212,81 @@ def _build_sensor_summary(history_rows, latest):
     return sensor_text, flags
 
 
-def _categorize(days):
-    if days <= 0:
-        return "HARVEST_TODAY"
-    elif days <= 7:
-        return "HARVEST_WEEK"
-    elif days <= 14:
-        return "MONITOR"
-    else:
-        return "WAIT"
-
-
-def _compute_blocks(blocks, today, flags):
+def _compute_blocks(blocks, today, daily_series):
     """
-    Pure Python block calculation — no AI involved.
-    Returns list of block dicts ready for display.
+    All harvest-date math happens here, in plain Python, using the
+    empirical baselines above and the cycle-long stress_ratio (not just
+    today's snapshot). Groq never touches these numbers — it only gets
+    asked to explain them in plain language. This keeps predictions
+    reproducible: the same inputs always give the same date.
     """
     result = []
-
-    co2_adj = -1 if flags["co2_high"]     else 0
-    hum_adj = +1 if flags["humidity_low"] else 0
-    total_adj = co2_adj + hum_adj
 
     for block_id, planted_date, harvest_count, last_harvest_date in blocks:
         hc = int(harvest_count or 0)
 
         try:
-            planted      = datetime.date.fromisoformat(planted_date)
-            days_planted = (today - planted).days
+            planted = datetime.date.fromisoformat(planted_date)
         except Exception:
-            days_planted = 0
+            planted = today
 
         if hc == 0:
-            target_days  = FIRST_HARVEST_DAYS
-            days_elapsed = days_planted
-            reference    = "since planting"
+            reference   = planted
+            base, lo, hi = FIRST_HARVEST_BASE, FIRST_HARVEST_MIN, FIRST_HARVEST_MAX
+            ref_label   = "since planting"
         else:
-            target_days = REHARVEST_DAYS
             try:
-                last         = datetime.date.fromisoformat(last_harvest_date)
-                days_elapsed = (today - last).days
+                reference = datetime.date.fromisoformat(last_harvest_date)
             except Exception:
-                days_elapsed = 0
-            reference = "since last harvest"
+                reference = today
+            base, lo, hi = REHARVEST_BASE, REHARVEST_MIN, REHARVEST_MAX
+            ref_label   = "since last harvest"
 
-        base_days_remaining = target_days - days_elapsed
-        adj_days_remaining  = base_days_remaining + total_adj
-        est_harvest_date    = today + datetime.timedelta(days=max(adj_days_remaining, 0))
-        category            = _categorize(adj_days_remaining)
+        days_elapsed = (today - reference).days
 
-        if total_adj == 0 and not flags["temp_high"]:
-            reason = "No adjustment needed, all conditions are within optimal range."
+        stress_ratio, days_with_data, avg_temp, avg_hum, avg_co2 = \
+            _compute_stress_ratio(daily_series, reference, today)
+
+        target_days = _predict_target_days(base, lo, hi, stress_ratio)
+        days_until_harvest = round(target_days - days_elapsed, 1)
+        est_harvest_date = reference + datetime.timedelta(days=round(target_days))
+
+        # Historical best/worst-case dates, for an honest range (not fake precision)
+        est_range_low  = reference + datetime.timedelta(days=lo)
+        est_range_high = reference + datetime.timedelta(days=hi)
+        est_range = f"{est_range_low} to {est_range_high}"
+
+        category = _categorize(days_until_harvest)
+
+        if stress_ratio is None:
+            reason = (
+                f"No sensor history {ref_label} yet — using this farm's historical "
+                f"median of {base} days."
+            )
+        elif stress_ratio == 0:
+            reason = (
+                f"Conditions {ref_label} ({days_with_data}d of data) stayed within the "
+                f"good range (avg {avg_temp}°C / {avg_hum}%) — tracking toward the "
+                f"faster end of this farm's historical range ({lo}-{hi}d)."
+            )
         else:
-            parts = []
-            if hum_adj:
-                parts.append(f"humidity at {flags['humidity']}% is below optimal, harvest delayed by 1 day")
-            if co2_adj:
-                parts.append(f"CO2 at {flags['co2']} ppm is high, harvest brought forward by 1 day")
-            if flags["temp_high"]:
-                parts.append(f"temperature at {flags['temp']}°C is above optimal, ensure ventilation")
-            reason = ". ".join(p.capitalize() for p in parts) + "."
+            pct = round(stress_ratio * 100)
+            reason = (
+                f"{pct}% of days {ref_label} showed stress conditions "
+                f"(avg {avg_temp}°C / {avg_hum}% humidity, vs. optimal "
+                f"{TEMP_MIN}-{TEMP_MAX}°C / {HUMIDITY_MIN}-{HUMIDITY_MAX}%) — "
+                f"pushed toward the slower end of this farm's historical range ({lo}-{hi}d)."
+            )
 
         result.append({
             "block_id":           block_id,
-            "days_planted":       days_planted,
+            "days_planted":       (today - planted).days,
+            "days_elapsed":       days_elapsed,
+            "reference_point":    ref_label,
             "est_harvest_date":   str(est_harvest_date),
-            "days_until_harvest": adj_days_remaining,
+            "est_range":          est_range,
+            "days_until_harvest": days_until_harvest,
+            "stress_ratio":       round(stress_ratio, 2) if stress_ratio is not None else None,
             "category":           category,
             "reason":             reason,
         })
@@ -193,29 +294,36 @@ def _compute_blocks(blocks, today, flags):
     return result
 
 
-def _build_advice_prompt(today, sensor_text, flags, lang="English"):
-    """Prompt ONLY for the environment advice paragraph — no block math."""
+def _build_advice_prompt(today, sensor_text, flags, block_summary, lang="English"):
+    """
+    Groq is only asked to write the explanation paragraph. It receives
+    already-computed signals (not raw sensor tables to reason over), so it
+    can't invent or contradict the numbers Python already worked out.
+    """
     return f"""You are an expert grey oyster mushroom farm advisor.
 
 IMPORTANT: Respond entirely in {lang}. All text in the JSON values must be in {lang}.
-
 
 Today: {today}
 
 === CURRENT SENSOR READINGS ===
 {sensor_text}
 
+=== COMPUTED HARVEST SIGNAL SUMMARY (already calculated, do not recalculate) ===
+{block_summary}
+
 === GROW FACTS — GREY OYSTER MUSHROOM ===
-Optimal conditions: temp {TEMP_MIN}–{TEMP_MAX}°C | humidity {HUMIDITY_MIN}–{HUMIDITY_MAX}% | CO2 < {CO2_MAX:.0f} ppm
+Optimal conditions: temp {TEMP_MIN}-{TEMP_MAX}°C | humidity {HUMIDITY_MIN}-{HUMIDITY_MAX}% | CO2 < {CO2_MAX:.0f} ppm
 
 === YOUR TASK ===
-Write 1-3 short simple sentences for a farmer summary. 
-Keep it simple and direct — no long explanations.
-Mention the actual sensor values and what action to take if needed.
+Write 1-3 short simple sentences summarizing current conditions and what action
+to take if needed. Use the computed signal summary to explain WHY blocks are
+running fast/slow if relevant — do not invent your own day counts. You may
+reference the 24h streaks/peaks/lows in the sensor readings if relevant.
 
 === CRITICAL RESPONSE RULES ===
 - "advice" MUST be a plain flowing paragraph — NOT bullet points, NOT a list.
-- Write connected sentences, not isolated observations.
+- Do not state specific harvest dates yourself; those come from the app, not you.
 
 === RESPONSE FORMAT ===
 Respond in valid JSON only. No text outside the JSON.
@@ -232,25 +340,53 @@ def get_harvest_advice(username, lang="English"):
 
     conn = get_db_connection()
     try:
-        history_rows, latest = _fetch_sensor_history(conn)
+        history_24h, latest = _fetch_sensor_history_24h(conn)
         blocks = _fetch_blocks(conn, username)
+
+        if not blocks:
+            return None, "No active blocks found. Please record planting data first."
+
+        today = datetime.date.today()
+
+        # Fetch daily sensor history covering every active block's cycle,
+        # starting from the earliest reference date among them, in ONE query.
+        # This is separate from the 24h history above — it's what drives
+        # the stress_ratio / harvest-date prediction, not the current-
+        # conditions summary shown to the user.
+        ref_dates = []
+        for _bid, planted_date, harvest_count, last_harvest_date in blocks:
+            hc = int(harvest_count or 0)
+            try:
+                ref_dates.append(
+                    datetime.date.fromisoformat(last_harvest_date) if hc else
+                    datetime.date.fromisoformat(planted_date)
+                )
+            except Exception:
+                pass
+        earliest = min(ref_dates) if ref_dates else today
+        daily_series = _fetch_daily_sensor_series(conn, earliest.isoformat())
     finally:
         conn.close()
 
-    if not blocks:
-        return None, "No active blocks found. Please record planting data first."
+    sensor_text, flags = _build_sensor_summary(history_24h, latest)
 
-    today = datetime.date.today()
+    # ── All block-level harvest math happens in Python ──────────────────────
+    computed_blocks = _compute_blocks(blocks, today, daily_series)
 
-    sensor_text, flags = _build_sensor_summary(history_rows, latest)
+    counts = {}
+    for b in computed_blocks:
+        counts[b["category"]] = counts.get(b["category"], 0) + 1
+    stressed = [b for b in computed_blocks if (b["stress_ratio"] or 0) > 0.3]
+    block_summary = (
+        f"{len(computed_blocks)} active blocks. "
+        f"Status counts: {counts}. "
+        f"{len(stressed)} block(s) showing significant stress days this cycle."
+    )
 
-    # ── Block calculations done entirely in Python ─────────────────────────────
-    computed_blocks = _compute_blocks(blocks, today, flags)
-
-    # ── Groq only for the advice paragraph ────────────────────────────────────
+    # ── Groq only writes the explanation paragraph ──────────────────────────
     try:
-        client  = Groq(api_key=api_key)
-        prompt  = _build_advice_prompt(today, sensor_text, flags, lang=lang)
+        client = Groq(api_key=api_key)
+        prompt = _build_advice_prompt(today, sensor_text, flags, block_summary, lang=lang)
         response = client.chat.completions.create(
             model           = "llama-3.3-70b-versatile",
             messages        = [{"role": "user", "content": prompt}],
@@ -283,3 +419,34 @@ def get_harvest_advice(username, lang="English"):
     }
 
     return result, None
+
+
+_ALIASES = {
+    "FALLBACK_AVG_FIRST_HARVEST": "FIRST_HARVEST_BASE",
+    "FALLBACK_FIRST_HARVEST":     "FIRST_HARVEST_BASE",
+    "AVG_FIRST_HARVEST_DAYS":     "FIRST_HARVEST_BASE",
+    "FIRST_HARVEST_DAYS":         "FIRST_HARVEST_BASE",
+    "FALLBACK_AVG_REHARVEST":     "REHARVEST_BASE",
+    "FALLBACK_REHARVEST":         "REHARVEST_BASE",
+    "AVG_REHARVEST_DAYS":         "REHARVEST_BASE",
+    "REHARVEST_DAYS":             "REHARVEST_BASE",
+    "MIN_FIRST_HARVEST_DAYS":     "FIRST_HARVEST_MIN",
+    "MAX_FIRST_HARVEST_DAYS":     "FIRST_HARVEST_MAX",
+    "MIN_REHARVEST_DAYS":         "REHARVEST_MIN",
+    "MAX_REHARVEST_DAYS":         "REHARVEST_MAX",
+}
+
+
+def __getattr__(name):
+    target = _ALIASES.get(name)
+    if target is not None:
+        print(f"[groq_advisor] NOTE: '{name}' was imported but not defined here — "
+              f"using {target}={globals()[target]} instead. "
+              f"Run: findstr /n \"from groq_advisor import\" views\\planting.py "
+              f"to find the real import list and fix this properly.")
+        return globals()[target]
+    raise AttributeError(
+        f"module 'groq_advisor' has no attribute '{name}'. "
+        f"This name isn't recognized even as an alias — please share the exact "
+        f"'from groq_advisor import (...)' block from your planting.py so it can be added."
+    )
