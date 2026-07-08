@@ -210,6 +210,13 @@ def show():
     # ── RECORD NEW BLOCK ──────────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("➕ Record New Block")
+
+    if st.session_state.get('_record_block_success'):
+        st.success(st.session_state.pop('_record_block_success'))
+    if st.session_state.get('_record_block_errors'):
+        for e in st.session_state.pop('_record_block_errors'):
+            st.error(e)
+
     with st.form("planting_form"):
         st.caption("For multiple blocks with same planting date, separate IDs with comma e.g. B1, B2, B3")
         block_id    = st.text_input("Block ID(s) (B1 – B244, uppercase B only)")
@@ -230,14 +237,12 @@ def show():
                         error_list.append(f"{raw}: {err}")
                         continue
                     conn   = get_db_connection()
-                    active = conn.execute(
-                        "SELECT block_id FROM planting_records WHERE block_id = ? AND username = ? AND (retired = 0 OR retired IS NULL)",
+                    # Auto-retire any leftover active cycles before replanting
+                    conn.execute(
+                        "UPDATE planting_records SET retired = 1 WHERE block_id = ? AND username = ? AND (retired = 0 OR retired IS NULL)",
                         (clean_id, st.session_state.username)
-                    ).fetchone()
-                    if active:
-                        error_list.append(f"{clean_id}: already has an active planting — retire it first before replanting.")
-                        conn.close()
-                        continue
+                    )
+                    conn.commit()
                     max_cycle_row = conn.execute(
                         "SELECT MAX(cycle) FROM planting_records WHERE block_id = ? AND username = ?",
                         (clean_id, st.session_state.username)
@@ -260,16 +265,19 @@ def show():
                         success_list.append(clean_id)
 
                 if success_list:
-                    st.success(f"✅ Recorded: {', '.join(success_list)} — First harvest in 14 days!")
-                for e in error_list:
-                    st.error(e)
-                if success_list:
-                    st.rerun()
+                    st.session_state['_record_block_success'] = f"✅ Recorded: {', '.join(success_list)} — First harvest in 14 days!"
+                if error_list:
+                    st.session_state['_record_block_errors'] = error_list
+                st.rerun()
 
     st.markdown("---")
 
     # ── MARK AS HARVESTED / RETIRE ────────────────────────────────────────────
     st.subheader("✅ Mark Block as Harvested")
+    if st.session_state.get('_harvest_success'):
+        st.success(st.session_state.pop('_harvest_success'))
+    if st.session_state.get('_harvest_error'):
+        st.error(st.session_state.pop('_harvest_error'))
     conn = get_db_connection()
     active_blocks_df = db_read_sql(
         "SELECT block_id FROM planting_records "
@@ -330,11 +338,11 @@ def show():
 
                     if success_list:
                         if retire_block:
-                            st.success(f"✅ Retired: {', '.join(success_list)}")
+                            st.session_state['_harvest_success'] = f"✅ Retired: {', '.join(success_list)}"
                         else:
-                            st.success(f"✅ Harvested: {', '.join(success_list)} — Next harvest in 15 days!")
+                            st.session_state['_harvest_success'] = f"✅ Harvested: {', '.join(success_list)} — Next harvest in 15 days!"
                     if error_list:
-                        st.error(f"❌ Failed: {', '.join(error_list)}")
+                        st.session_state['_harvest_error'] = f"❌ Failed: {', '.join(error_list)}"
                     st.rerun()
     else:
         st.info("No active blocks. All blocks are retired or none recorded yet.")

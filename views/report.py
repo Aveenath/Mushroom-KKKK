@@ -90,6 +90,48 @@ def _build_harvest_pdf(norm_id, cycle, species, planted_date, display_rows, sit_
     return bytes(pdf.output())
 
 
+def _build_full_report_pdf(df):
+    from fpdf import FPDF
+    pdf = FPDF(orientation='L')  # landscape for wider table
+    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.add_page()
+    pdf.set_margins(10, 10, 10)
+
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, "Full Farm Harvest Report", ln=True)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.cell(0, 5, _safe(f"Generated: {datetime.date.today()}  |  {len(df)} record(s)"), ln=True)
+    pdf.ln(3)
+
+    headers = ["Block ID", "Planted Date", "Harvest #", "Actual Harvest Date", "Predicted Harvest Date", "Situation"]
+    widths  = [28, 32, 32, 46, 48, 90]
+
+    pdf.set_fill_color(76, 175, 80)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 8)
+    for h, w in zip(headers, widths):
+        pdf.cell(w, 7, _safe(h), border=1, fill=True)
+    pdf.ln()
+
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Helvetica", "", 8)
+    for i, (_, row) in enumerate(df.iterrows()):
+        pdf.set_fill_color(245, 245, 245) if i % 2 == 0 else pdf.set_fill_color(255, 255, 255)
+        vals = [
+            str(row.get("Block ID", ""))[:12],
+            str(row.get("Planted Date", ""))[:12],
+            str(row.get("Harvest #", ""))[:14],
+            str(row.get("Actual Harvest Date", ""))[:14],
+            str(row.get("Predicted Harvest Date", ""))[:14],
+            str(row.get("Situation", ""))[:40],
+        ]
+        for val, w in zip(vals, widths):
+            pdf.cell(w, 6, _safe(val), border=1, fill=True)
+        pdf.ln()
+
+    return bytes(pdf.output())
+
+
 def _validate_and_normalize(block_id):
     raw = block_id.strip()
     if not raw.startswith('B'):
@@ -174,6 +216,26 @@ def _build_full_report(username):
              .last()
     )
 
+    # Fetch Maziah's sensor-adjusted predicted dates for upcoming harvests
+    try:
+        from groq_advisor import _fetch_sensor_history, _build_sensor_summary, _compute_blocks
+        _conn_s = get_db_connection()
+        _hist, _latest = _fetch_sensor_history(_conn_s)
+        _conn_s.close()
+        _, _flags = _build_sensor_summary(_hist, _latest)
+        _active_blocks = [
+            (str(r['block_id']), str(r['planted_date']),
+             int(r.get('harvest_count') or 0),
+             str(r.get('last_harvest_date') or ''))
+            for _, r in pr_df.iterrows()
+            if not int(r.get('retired') or 0)
+        ]
+        import datetime as _dt
+        _maziah = {b['block_id']: b['est_harvest_date']
+                   for b in _compute_blocks(_active_blocks, _dt.date.today(), _flags)}
+    except Exception:
+        _maziah = {}
+
     # Latest situation per block
     latest_sit = {}
     for _, row in sit_df.iterrows():
@@ -227,12 +289,13 @@ def _build_full_report(username):
         if not retired:
             try:
                 next_date = _get_next_harvest(pr['planted_date'], hc, str(lhd) if lhd else None)
+                predicted_upcoming = _maziah.get(bid) or str(next_date)
                 rows.append({
                     'Block ID':               bid,
                     'Planted Date':           str(pr['planted_date']),
                     'Harvest #':              f'{hc + 1} (Upcoming)',
                     'Actual Harvest Date':    '-',
-                    'Predicted Harvest Date': str(next_date),
+                    'Predicted Harvest Date': predicted_upcoming,
                     'Situation':              situation,
                 })
             except Exception:
@@ -479,10 +542,20 @@ def show():
             st.caption(f"{len(full_df)} record(s) — sorted by Block ID then Cycle")
             with st.container(height=450):
                 st.dataframe(full_df, hide_index=True, use_container_width=True)
+            exp1, exp2 = st.columns(2)
             csv_export = full_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
+            exp1.download_button(
                 "📥 Export Full Report (CSV)",
                 data=csv_export,
                 file_name=f"full_report_{get_local_now().date()}.csv",
                 mime="text/csv",
+                use_container_width=True,
+            )
+            pdf_bytes = _build_full_report_pdf(full_df)
+            exp2.download_button(
+                "📄 Export Full Report (PDF)",
+                data=pdf_bytes,
+                file_name=f"full_report_{get_local_now().date()}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
             )
