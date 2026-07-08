@@ -37,11 +37,6 @@ def _normalize_block(block_id):
 def show():
     st.title("📝 Record Daily Situation")
 
-    # --- Choose mode OUTSIDE form so it re-renders dynamically ---
-    record_by = st.radio("Record by:", ["Block", "Section"], horizontal=True)
-
-    st.markdown("")
-
     # --- Photo uploader OUTSIDE form so preview works ---
     uploaded_photo = st.file_uploader(
         "📷 Disease / Condition Photo (optional — max 5 MB)",
@@ -73,13 +68,9 @@ def show():
         with col_time:
             time = st.time_input("Report Time", get_local_now().time())
 
-        # --- Row 2: Block OR Section (not both) ---
-        if record_by == "Block":
-            selected_block = st.text_input("Block ID", placeholder="e.g. B1, B099, B244")
-            selected_section = "-"
-        else:
-            selected_section = st.selectbox("Section (A11–B33)", SECTION_OPTIONS)
-            selected_block = "-"
+        # --- Row 2: Block ID ---
+        selected_block = st.text_input("Block ID", placeholder="e.g. B1, B099, B244")
+        selected_section = "-"
 
         # --- Situation ---
         status = st.selectbox("Current Situation", ["Normal", "Harvesting", "Disease Detected", "Maintenance"])
@@ -105,30 +96,19 @@ def show():
             clean_quality = quality.split(" ", 1)[1]
             disease_val = disease.strip() if disease.strip() else "None"
 
-            if record_by == "Block":
-                if not selected_block.strip():
-                    st.error("Please enter a Block ID.")
-                else:
-                    block_ref, err = _normalize_block(selected_block.strip().upper())
-                    if err:
-                        st.error(err)
-                    else:
-                        conn = get_db_connection()
-                        conn.execute(
-                            "INSERT INTO situation_reports (date, status, disease_noted, quality, notes, username, block_id, section_id, photo) VALUES (?,?,?,?,?,?,?,?,?)",
-                            (report_datetime, status, disease_val, clean_quality, notes,
-                             st.session_state.username, block_ref, "-", photo_url)
-                        )
-                        conn.commit()
-                        conn.close()
-                        st.success(f"Report saved — Block **{block_ref}** | Quality: {quality}")
+            if not selected_block.strip():
+                st.error("Please enter a Block ID.")
             else:
-                conn = get_db_connection()
-                conn.execute(
-                    "INSERT INTO situation_reports (date, status, disease_noted, quality, notes, username, block_id, section_id, photo) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (report_datetime, status, disease_val, clean_quality, notes,
-                     st.session_state.username, "-", selected_section, photo_url)
-                )
-                conn.commit()
-                conn.close()
-                st.success(f"Report saved — Section **{selected_section}** | Quality: {quality}")
+                block_ref, err = _normalize_block(selected_block.strip().upper())
+                if err:
+                    st.error(err)
+                else:
+                    conn = get_db_connection()
+                    conn.execute(
+                        "INSERT INTO situation_reports (date, status, disease_noted, quality, notes, username, block_id, section_id, photo) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (report_datetime, status, disease_val, clean_quality, notes,
+                         st.session_state.username, block_ref, "-", photo_url)
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Report saved — Block **{block_ref}** | Quality: {quality}")
