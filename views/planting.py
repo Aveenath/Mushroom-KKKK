@@ -162,6 +162,7 @@ def show():
                 st.warning(result.get("reason", "Could not train yet."))
     except Exception:
         st.caption("🎯 Trained harvest predictor: not available yet.")
+        st.exception(e)   # TEMPORARY
 
     if st.button("🔮 Get AI Recommendation", type="primary"):
         with st.spinner("Getting AI harvest recommendations..."):
