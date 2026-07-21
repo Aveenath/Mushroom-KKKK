@@ -20,3 +20,4 @@ bcrypt
 cloudinary
 fpdf2
 pytest  # dev/testing only
+lightgbm
