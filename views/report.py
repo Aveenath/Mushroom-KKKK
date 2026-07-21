@@ -189,12 +189,13 @@ def _build_full_report(username):
     conn = get_db_connection()
     try:
         pr_df = db_read_sql(
-            "SELECT block_id, cycle, planted_date, harvest_count, last_harvest_date, retired "
+            "SELECT block_id, cycle, planted_date, harvest_count, last_harvest_date, retired, "
+            "predicted_harvest "
             "FROM planting_records WHERE username = ? ORDER BY block_id, cycle ASC",
             conn, params=(username,)
         )
         hist_df = db_read_sql(
-            "SELECT block_id, cycle, harvest_number, harvest_date FROM harvest_history "
+            "SELECT block_id, cycle, harvest_number, harvest_date, predicted_date_snapshot FROM harvest_history "
             "WHERE username = ? ORDER BY block_id, cycle, harvest_number ASC",
             conn, params=(username,)
         )
@@ -215,26 +216,6 @@ def _build_full_report(username):
              .groupby('block_id', as_index=False)
              .last()
     )
-
-    # Fetch Maziah's sensor-adjusted predicted dates for upcoming harvests
-    try:
-        from groq_advisor import _fetch_sensor_history, _build_sensor_summary, _compute_blocks
-        _conn_s = get_db_connection()
-        _hist, _latest = _fetch_sensor_history(_conn_s)
-        _conn_s.close()
-        _, _flags = _build_sensor_summary(_hist, _latest)
-        _active_blocks = [
-            (str(r['block_id']), str(r['planted_date']),
-             int(r.get('harvest_count') or 0),
-             str(r.get('last_harvest_date') or ''))
-            for _, r in pr_df.iterrows()
-            if not int(r.get('retired') or 0)
-        ]
-        import datetime as _dt
-        _maziah = {b['block_id']: b['est_harvest_date']
-                   for b in _compute_blocks(_active_blocks, _dt.date.today(), _flags)}
-    except Exception:
-        _maziah = {}
 
     # Latest situation per block
     latest_sit = {}
@@ -267,14 +248,25 @@ def _build_full_report(username):
 
         # One row per completed harvest
         for i in range(1, hc + 1):
-            predicted_str = str(predicted_dates[i - 1]) if i <= len(predicted_dates) else '-'
             actual_str = '-'
+            snapshot_str = None
             if not block_hist.empty:
                 match = block_hist[block_hist['harvest_number'].astype(int) == i]
                 if not match.empty:
                     actual_str = str(match.iloc[0]['harvest_date'])
+                    snap = match.iloc[0].get('predicted_date_snapshot')
+                    if snap is not None and pd.notna(snap) and str(snap).strip():
+                        snapshot_str = str(snap)
             if actual_str == '-' and i == hc and lhd:
                 actual_str = str(lhd)
+
+            # Prefer the real AI prediction captured at harvest time.
+            # Falls back to the fixed-formula reconstruction for older
+            # harvests recorded before this snapshot existed.
+            if snapshot_str:
+                predicted_str = snapshot_str
+            else:
+                predicted_str = str(predicted_dates[i - 1]) if i <= len(predicted_dates) else '-'
 
             rows.append({
                 'Block ID':               bid,
@@ -288,8 +280,17 @@ def _build_full_report(username):
         # Upcoming row for active blocks
         if not retired:
             try:
-                next_date = _get_next_harvest(pr['planted_date'], hc, str(lhd) if lhd else None)
-                predicted_upcoming = _maziah.get(bid) or str(next_date)
+                # predicted_harvest is overwritten in-place by the AI
+                # advisor whenever "Get AI Recommendation" is run in
+                # Harvest Schedule Manager. Fall back to the fixed
+                # 14/15-day formula only if it's somehow empty.
+                pred_col = _clean(pr.get('predicted_harvest'))
+                if pred_col:
+                    predicted_upcoming = str(pred_col)
+                else:
+                    next_date = _get_next_harvest(pr['planted_date'], hc, str(lhd) if lhd else None)
+                    predicted_upcoming = str(next_date)
+
                 rows.append({
                     'Block ID':               bid,
                     'Planted Date':           str(pr['planted_date']),
@@ -313,6 +314,15 @@ def _build_full_report(username):
 
 def show():
     st.title("📊 Generate Report")
+
+    # Silent auto-refresh, same as planting.py — keeps predicted_harvest
+    # current even if this page is opened without visiting Harvest
+    # Schedule Manager first. No Groq call.
+    try:
+        from groq_advisor import refresh_predicted_dates
+        refresh_predicted_dates(st.session_state.username)
+    except Exception:
+        pass
 
     # ── SECTION 1: Block Harvest Detail ───────────────────────────────────────
     st.subheader("🔍 Block Harvest Detail")
@@ -362,7 +372,7 @@ def show():
                 # Fetch harvest history for this block + cycle
                 conn_h = get_db_connection()
                 history_df = db_read_sql(
-                    "SELECT harvest_number, harvest_date, weight_kg FROM harvest_history "
+                    "SELECT harvest_number, harvest_date, weight_kg, predicted_date_snapshot FROM harvest_history "
                     "WHERE block_id = ? AND username = ? AND cycle = ? ORDER BY harvest_number ASC",
                     conn_h, params=(norm_id, st.session_state.username, cycle)
                 )
@@ -386,13 +396,19 @@ def show():
 
                 raw_weights = []
                 for i in range(1, hc + 1):
-                    predicted_str = str(predicted_dates[i - 1]) if i <= len(predicted_dates) else "—"
                     if i in recorded_nums:
                         h        = history_df[history_df['harvest_number'].astype(int) == i].iloc[0]
                         w        = h['weight_kg']
                         w_val    = round(float(w), 2) if (w is not None and pd.notna(w)) else None
                         if w_val is not None:
                             raw_weights.append(w_val)
+
+                        snap = h.get('predicted_date_snapshot')
+                        if snap is not None and pd.notna(snap) and str(snap).strip():
+                            predicted_str = str(snap)
+                        else:
+                            predicted_str = str(predicted_dates[i - 1]) if i <= len(predicted_dates) else "—"
+
                         display_rows.append({
                             "#":              f"Harvest #{i}",
                             "Predicted Date": predicted_str,
@@ -400,6 +416,7 @@ def show():
                             "Weight (kg)":    f"{w_val:.2f}" if w_val is not None else "—",
                         })
                     else:
+                        predicted_str = str(predicted_dates[i - 1]) if i <= len(predicted_dates) else "—"
                         actual = lhd if (i == hc and lhd) else "Not recorded"
                         display_rows.append({
                             "#":              f"Harvest #{i}",
@@ -411,7 +428,15 @@ def show():
                 if not retired:
                     next_date     = _get_next_harvest(row['planted_date'], hc, lhd)
                     status_label, _ = _get_status(next_date)
-                    next_predicted = str(next_date)
+
+                    pred_col = row.get('predicted_harvest')
+                    pred_col = pred_col if (pred_col is not None and pd.notna(pred_col) and str(pred_col).strip()) else None
+                    if pred_col and str(pred_col) != str(next_date):
+                        next_predicted = str(pred_col)
+                        st.caption(f"🤖 Using AI-adjusted date — fixed 14/15-day schedule would be {next_date}.")
+                    else:
+                        next_predicted = str(pred_col) if pred_col else str(next_date)
+
                     display_rows.append({
                         "#":              f"🔜 Harvest #{hc + 1} (Upcoming)",
                         "Predicted Date": next_predicted,

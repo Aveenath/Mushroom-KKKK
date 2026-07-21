@@ -63,7 +63,8 @@ def _fetch_daily_sensor_series(conn, start_date_str):
     Daily averages from start_date_str to now. This is what lets us look
     back across an entire growth cycle (which can be anywhere from 5 to 15
     days) instead of only the last 24 hours — used to compute the
-    stress_ratio that drives the harvest-date prediction.
+    stress_ratio (and, when a trained model exists, the full feature set)
+    that drives the harvest-date prediction.
     """
     try:
         cur = conn.execute("""
@@ -85,7 +86,7 @@ def _fetch_daily_sensor_series(conn, start_date_str):
 def _fetch_blocks(conn, username):
     try:
         cur = conn.execute(
-            """SELECT block_id, planted_date, harvest_count, last_harvest_date
+            """SELECT block_id, cycle, planted_date, harvest_count, last_harvest_date
                FROM planting_records
                WHERE username = ? AND (retired = 0 OR retired IS NULL)
                ORDER BY block_id""",
@@ -96,19 +97,68 @@ def _fetch_blocks(conn, username):
         return []
 
 
-def _compute_stress_ratio(daily_series, start_date, end_date):
+def _build_prior_days_map(conn, username, blocks):
     """
-    Fraction of days, within [start_date, end_date], where conditions look
-    like the "kering"/stress pattern seen in this farm's own history
-    (low humidity + high temp). Returns (stress_ratio, days_with_data,
-    avg_temp, avg_humidity, avg_co2) for that window. This is what feeds
-    _predict_target_days() — the prediction engine, unlike the 24h summary
-    below, looks at the whole cycle so far rather than just today.
+    For each active block, prior_observed_days = how long THIS block's most
+    recently COMPLETED interval took (harvest N-1 -> N, or planted ->
+    harvest 1). This is one of the trained model's features — it lets the
+    model see whether this specific block has personally been running fast
+    or slow, not just farm-wide averages. Returns {(block_id, cycle): days}.
     """
-    window = [
+    prior = {}
+    try:
+        harvest_rows = conn.execute(
+            "SELECT block_id, cycle, harvest_number, harvest_date FROM harvest_history "
+            "WHERE username = ? ORDER BY block_id, cycle, harvest_number ASC",
+            (username,)
+        ).fetchall()
+    except Exception:
+        harvest_rows = []
+
+    by_key = {}
+    for block_id, cycle, h_num, h_date in harvest_rows:
+        by_key.setdefault((str(block_id), int(cycle or 1)), []).append((int(h_num), h_date))
+
+    for block_id, cycle, planted_date, harvest_count, _last in blocks:
+        key = (str(block_id), int(cycle or 1))
+        hc = int(harvest_count or 0)
+        if hc == 0:
+            prior[key] = 0
+            continue
+        seq = sorted(by_key.get(key, []))
+        reference_str = planted_date if hc == 1 else next(
+            (d for n, d in seq if n == hc - 1), None
+        )
+        current_str = next((d for n, d in seq if n == hc), None)
+        if not reference_str or not current_str:
+            prior[key] = 0
+            continue
+        try:
+            ref = datetime.date.fromisoformat(str(reference_str))
+            cur_d = datetime.date.fromisoformat(str(current_str))
+            prior[key] = max((cur_d - ref).days, 0)
+        except Exception:
+            prior[key] = 0
+
+    return prior
+
+
+def _window_rows(daily_series, start_date, end_date):
+    """Daily sensor rows falling within [start_date, end_date] inclusive."""
+    return [
         row for row in daily_series
         if start_date.isoformat() <= row[0] <= end_date.isoformat()
     ]
+
+
+def _compute_stress_ratio(window):
+    """
+    Fraction of days in `window` where conditions look like the
+    "kering"/stress pattern seen in this farm's own history (low humidity
+    + high temp). Returns (stress_ratio, days_with_data, avg_temp,
+    avg_humidity, avg_co2). Feeds the fixed-baseline fallback below —
+    unlike the 24h summary, this looks at the whole cycle so far.
+    """
     if not window:
         return None, 0, None, None, None
 
@@ -126,13 +176,39 @@ def _compute_stress_ratio(daily_series, start_date, end_date):
 
 def _predict_target_days(base, min_d, max_d, stress_ratio):
     """
-    No sensor data for this cycle yet -> fall back to the historical median.
-    Otherwise interpolate between the best-case and worst-case durations
-    seen in real history, based on how stressed the environment has been.
+    Fixed-baseline fallback, used only when no trained model exists yet
+    (or the model call fails for any reason). No sensor data for this
+    cycle -> historical median. Otherwise interpolate between best-case
+    and worst-case durations seen in real history, based on how stressed
+    the environment has been.
     """
     if stress_ratio is None:
         return base
     return round(min_d + stress_ratio * (max_d - min_d), 1)
+
+
+def _try_ml_days(is_first, harvest_number, cycle, window, prior_days):
+    """
+    Attempt a prediction from the trained harvest_predictor.py model, using
+    the same engineered features it was trained on. Returns None — never
+    raises — if no model has been trained yet, or on any failure; caller
+    falls back to the fixed baseline in that case. This is what lets every
+    new harvest recorded in Turso actually change future predictions,
+    instead of just sitting in the table unused.
+    """
+    try:
+        from harvest_predictor import predict_observed_days, _engineer_window_features
+    except Exception:
+        return None
+    try:
+        feats = _engineer_window_features(window)
+        feats["is_first_harvest"]    = 1 if is_first else 0
+        feats["harvest_number"]      = harvest_number
+        feats["cycle"]               = cycle
+        feats["prior_observed_days"] = prior_days
+        return predict_observed_days(feats)
+    except Exception:
+        return None
 
 
 def _categorize(days):
@@ -212,18 +288,21 @@ def _build_sensor_summary(history_rows, latest):
     return sensor_text, flags
 
 
-def _compute_blocks(blocks, today, daily_series):
+def _compute_blocks(blocks, today, daily_series, prior_days_map=None):
     """
-    All harvest-date math happens here, in plain Python, using the
-    empirical baselines above and the cycle-long stress_ratio (not just
-    today's snapshot). Groq never touches these numbers — it only gets
-    asked to explain them in plain language. This keeps predictions
-    reproducible: the same inputs always give the same date.
+    All harvest-date math happens here, in plain Python — Groq never
+    touches these numbers, it only explains them in plain language, which
+    keeps predictions reproducible. For each block this now tries the
+    trained harvest_predictor.py model FIRST (if one exists), and only
+    falls back to the fixed empirical baseline when no model is trained
+    yet or the model call fails for any reason.
     """
+    prior_days_map = prior_days_map or {}
     result = []
 
-    for block_id, planted_date, harvest_count, last_harvest_date in blocks:
+    for block_id, cycle, planted_date, harvest_count, last_harvest_date in blocks:
         hc = int(harvest_count or 0)
+        cycle = int(cycle or 1)
 
         try:
             planted = datetime.date.fromisoformat(planted_date)
@@ -234,6 +313,7 @@ def _compute_blocks(blocks, today, daily_series):
             reference   = planted
             base, lo, hi = FIRST_HARVEST_BASE, FIRST_HARVEST_MIN, FIRST_HARVEST_MAX
             ref_label   = "since planting"
+            is_first    = True
         else:
             try:
                 reference = datetime.date.fromisoformat(last_harvest_date)
@@ -241,13 +321,23 @@ def _compute_blocks(blocks, today, daily_series):
                 reference = today
             base, lo, hi = REHARVEST_BASE, REHARVEST_MIN, REHARVEST_MAX
             ref_label   = "since last harvest"
+            is_first    = False
 
         days_elapsed = (today - reference).days
 
-        stress_ratio, days_with_data, avg_temp, avg_hum, avg_co2 = \
-            _compute_stress_ratio(daily_series, reference, today)
+        window = _window_rows(daily_series, reference, today)
+        stress_ratio, days_with_data, avg_temp, avg_hum, avg_co2 = _compute_stress_ratio(window)
 
-        target_days = _predict_target_days(base, lo, hi, stress_ratio)
+        prior_days = prior_days_map.get((str(block_id), cycle), 0)
+        ml_days = _try_ml_days(is_first, hc + 1, cycle, window, prior_days)
+
+        if ml_days is not None:
+            target_days = ml_days
+            source = "model"
+        else:
+            target_days = _predict_target_days(base, lo, hi, stress_ratio)
+            source = "baseline"
+
         days_until_harvest = round(target_days - days_elapsed, 1)
         est_harvest_date = reference + datetime.timedelta(days=round(target_days))
 
@@ -258,16 +348,21 @@ def _compute_blocks(blocks, today, daily_series):
 
         category = _categorize(days_until_harvest)
 
+        if source == "model":
+            model_note = " (from the trained harvest model)"
+        else:
+            model_note = ""
+
         if stress_ratio is None:
             reason = (
                 f"No sensor history {ref_label} yet — using this farm's historical "
-                f"median of {base} days."
+                f"median of {base} days{model_note}."
             )
         elif stress_ratio == 0:
             reason = (
                 f"Conditions {ref_label} ({days_with_data}d of data) stayed within the "
                 f"good range (avg {avg_temp}°C / {avg_hum}%) — tracking toward the "
-                f"faster end of this farm's historical range ({lo}-{hi}d)."
+                f"faster end of this farm's historical range ({lo}-{hi}d){model_note}."
             )
         else:
             pct = round(stress_ratio * 100)
@@ -275,7 +370,7 @@ def _compute_blocks(blocks, today, daily_series):
                 f"{pct}% of days {ref_label} showed stress conditions "
                 f"(avg {avg_temp}°C / {avg_hum}% humidity, vs. optimal "
                 f"{TEMP_MIN}-{TEMP_MAX}°C / {HUMIDITY_MIN}-{HUMIDITY_MAX}%) — "
-                f"pushed toward the slower end of this farm's historical range ({lo}-{hi}d)."
+                f"pushed toward the slower end of this farm's historical range ({lo}-{hi}d){model_note}."
             )
 
         result.append({
@@ -289,6 +384,7 @@ def _compute_blocks(blocks, today, daily_series):
             "stress_ratio":       round(stress_ratio, 2) if stress_ratio is not None else None,
             "category":           category,
             "reason":             reason,
+            "prediction_source":  source,
         })
 
     return result
@@ -333,6 +429,66 @@ Respond in valid JSON only. No text outside the JSON.
 }}"""
 
 
+def compute_harvest_predictions(username):
+    """
+    Recomputes every active block's harvest-date estimate from sensor
+    stress data (and the trained LightGBM model, if one exists) — pure
+    Python, no Groq call, no API key required. This is safe to run on
+    every page load for a silent auto-refresh of predicted_harvest.
+    Returns (computed_blocks, error).
+    """
+    conn = get_db_connection()
+    try:
+        blocks = _fetch_blocks(conn, username)
+        if not blocks:
+            return [], None
+
+        today = datetime.date.today()
+        ref_dates = []
+        for _bid, _cycle, planted_date, harvest_count, last_harvest_date in blocks:
+            hc = int(harvest_count or 0)
+            try:
+                ref_dates.append(
+                    datetime.date.fromisoformat(last_harvest_date) if hc else
+                    datetime.date.fromisoformat(planted_date)
+                )
+            except Exception:
+                pass
+        earliest = min(ref_dates) if ref_dates else today
+        daily_series = _fetch_daily_sensor_series(conn, earliest.isoformat())
+        prior_days_map = _build_prior_days_map(conn, username, blocks)
+    finally:
+        conn.close()
+
+    computed_blocks = _compute_blocks(blocks, today, daily_series, prior_days_map)
+    return computed_blocks, None
+
+
+def refresh_predicted_dates(username):
+    """
+    Silent auto-refresh: recompute predicted_harvest for every active
+    block from current sensor data and save it — no Groq call. Meant to
+    be called at the top of any page (planting.py, report.py) so the
+    saved date is never far behind current sensor readings, without
+    requiring a manual "Get AI Recommendation" click each time.
+    """
+    computed_blocks, err = compute_harvest_predictions(username)
+    if err or not computed_blocks:
+        return False
+    conn = get_db_connection()
+    try:
+        for b in computed_blocks:
+            conn.execute(
+                "UPDATE planting_records SET predicted_harvest = ? "
+                "WHERE block_id = ? AND username = ? AND (retired = 0 OR retired IS NULL)",
+                (b["est_harvest_date"], b["block_id"], username)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return True
+
+
 def get_harvest_advice(username, lang="English"):
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
@@ -351,10 +507,10 @@ def get_harvest_advice(username, lang="English"):
         # Fetch daily sensor history covering every active block's cycle,
         # starting from the earliest reference date among them, in ONE query.
         # This is separate from the 24h history above — it's what drives
-        # the stress_ratio / harvest-date prediction, not the current-
-        # conditions summary shown to the user.
+        # the stress_ratio / feature engineering for the harvest-date
+        # prediction, not the current-conditions summary shown to the user.
         ref_dates = []
-        for _bid, planted_date, harvest_count, last_harvest_date in blocks:
+        for _bid, _cycle, planted_date, harvest_count, last_harvest_date in blocks:
             hc = int(harvest_count or 0)
             try:
                 ref_dates.append(
@@ -365,18 +521,21 @@ def get_harvest_advice(username, lang="English"):
                 pass
         earliest = min(ref_dates) if ref_dates else today
         daily_series = _fetch_daily_sensor_series(conn, earliest.isoformat())
+
+        prior_days_map = _build_prior_days_map(conn, username, blocks)
     finally:
         conn.close()
 
     sensor_text, flags = _build_sensor_summary(history_24h, latest)
 
     # ── All block-level harvest math happens in Python ──────────────────────
-    computed_blocks = _compute_blocks(blocks, today, daily_series)
+    computed_blocks = _compute_blocks(blocks, today, daily_series, prior_days_map)
 
     counts = {}
     for b in computed_blocks:
         counts[b["category"]] = counts.get(b["category"], 0) + 1
     stressed = [b for b in computed_blocks if (b["stress_ratio"] or 0) > 0.3]
+    model_used = any(b.get("prediction_source") == "model" for b in computed_blocks)
     block_summary = (
         f"{len(computed_blocks)} active blocks. "
         f"Status counts: {counts}. "
@@ -416,6 +575,7 @@ def get_harvest_advice(username, lang="English"):
         "latest_temp":     flags["temp"],
         "latest_humidity": flags["humidity"],
         "latest_co2":      flags["co2"],
+        "model_used":      model_used,
     }
 
     return result, None
