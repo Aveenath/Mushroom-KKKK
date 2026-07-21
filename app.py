@@ -217,7 +217,7 @@ if st.sidebar.button("Log Out"):
     st.session_state.username = ""
     st.rerun()
 
-# --- PAGE ROUTING ---
+# ---- PAGE ROUTING ----
 if page == "Dashboard":
     from views.dashboard import show
     show()
