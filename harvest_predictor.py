@@ -4,6 +4,7 @@ import datetime
 import joblib
 import numpy as np
 import pandas as pd
+import streamlit as st
 from pathlib import Path
 
 from utils import get_db_connection
@@ -13,17 +14,10 @@ MODEL_PATH        = Path(__file__).parent / "harvest_predictor.pkl"
 METADATA_PATH     = Path(__file__).parent / "harvest_predictor_meta.json"
 RETRAIN_STATE_KEY = "harvest_predictor_retrain_state"
 
-# Colab-trained snapshot (from your Excel historical data). If present,
-# this gets merged with whatever's in the live DB every time training
-# runs — so your original dataset never has to be inserted into
-# harvest_history/planting_records to keep contributing to the model.
 BASELINE_DATA_PATH = Path(__file__).parent / "baseline_training_data.csv"
 
-# Don't even attempt training below this — too few samples to trust.
 MIN_SAMPLES_TO_TRAIN = 15
 
-# Auto-retrain once this many NEW harvests have accumulated since the
-# last training run (avoids retraining on every single harvest).
 RETRAIN_EVERY_N_NEW_SAMPLES = 5
 
 FEATURE_COLUMNS = [
@@ -99,11 +93,6 @@ def _engineer_window_features(rows):
 
 
 def load_baseline_training_data():
-    """
-    Load the Colab-trained baseline snapshot, if it's been uploaded.
-    Returns an empty DataFrame with the right columns if the file
-    doesn't exist yet — safe to concat with either way.
-    """
     empty = pd.DataFrame(columns=FEATURE_COLUMNS + ["observed_days", "block_id", "source"])
     if not BASELINE_DATA_PATH.exists():
         return empty
@@ -111,11 +100,9 @@ def load_baseline_training_data():
         df = pd.read_csv(BASELINE_DATA_PATH)
         missing = set(FEATURE_COLUMNS + ["observed_days"]) - set(df.columns)
         if missing:
-            # Don't silently train on a malformed baseline file — better
-            # to surface the problem than quietly drop your old data.
             raise ValueError(
                 f"baseline_training_data.csv is missing required column(s): {missing}. "
-                f"Regenerate it from Colab using the same feature schema."
+                f"Regenerate it from csv using the same feature schema."
             )
         if "block_id" not in df.columns:
             df["block_id"] = "unknown"
@@ -134,7 +121,7 @@ def build_training_dataframe(username=None, conn=None, include_baseline=True):
     sensor features + the actual observed_days as the label.
 
     If include_baseline=True (default), also merges in
-    baseline_training_data.csv — the Colab-trained snapshot of your
+    baseline_training_data.csv — the trained snapshot of your
     original Excel data — so old and new data are combined for every
     training run, even though the old rows were never inserted into
     harvest_history.
@@ -306,6 +293,7 @@ def train_harvest_predictor(df=None, username=None):
     final_model.fit(X, y)
 
     joblib.dump({"model": final_model, "feature_columns": FEATURE_COLUMNS}, MODEL_PATH)
+    load_predictor.clear()  # drop the cached (now-stale) model so the new one loads next call
 
     metadata = {
         "trained_at":  datetime.datetime.utcnow().isoformat(),
@@ -321,8 +309,18 @@ def train_harvest_predictor(df=None, username=None):
     return {"trained": True, "n_samples": n, "cv_mae_days": cv_mae}
 
 
+@st.cache_resource
 def load_predictor():
-    """Load the trained model, or None if it doesn't exist yet."""
+    """
+    Load the trained model, or None if it doesn't exist yet.
+    Cached with st.cache_resource — predict_observed_days() is called once
+    per active block (up to 244), and joblib.load() was previously hitting
+    disk (deserializing the full LightGBM bundle) on every single one of
+    those calls. This makes it load once per process and reuses the same
+    in-memory model object afterwards. Cache is explicitly cleared at the
+    end of train_harvest_predictor() below so a retrain takes effect
+    immediately rather than waiting on cache expiry/app restart.
+    """
     if not MODEL_PATH.exists():
         return None
     try:

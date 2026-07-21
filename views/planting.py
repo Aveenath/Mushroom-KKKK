@@ -141,7 +141,7 @@ def show():
             live_n = predictor_meta.get('n_live_samples', predictor_meta['n_samples'])
             st.caption(
                 f"🎯 Trained harvest predictor: {predictor_meta['n_samples']} samples "
-                f"({baseline_n} from Colab baseline + {live_n} from live harvests), "
+                f"({baseline_n} from csv baseline + {live_n} from live harvests), "
                 f"cross-validated MAE {predictor_meta['cv_mae_days']}d "
                 f"(last trained {predictor_meta['trained_at'][:10]})"
             )
