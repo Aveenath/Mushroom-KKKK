@@ -504,14 +504,34 @@ def refresh_predicted_dates(username):
     computed_blocks, err = compute_harvest_predictions(username)
     if err or not computed_blocks:
         return False
+
+    # Single batched UPDATE instead of one round-trip per block. With ~244
+    # possible blocks, doing this one-at-a-time was the actual cost of this
+    # function (each conn.execute() is a network round-trip to Turso) —
+    # the sensor-math above is pure Python and comparatively instant.
+    # A CASE expression lets us update every block in exactly one statement,
+    # portable across sqlite3 and libsql/Turso (no UPDATE...FROM needed).
+    case_parts = []
+    block_ids = []
+    params = []
+    for b in computed_blocks:
+        case_parts.append("WHEN ? THEN ?")
+        params.extend([b["block_id"], b["est_harvest_date"]])
+        block_ids.append(b["block_id"])
+
+    placeholders = ", ".join("?" for _ in block_ids)
+    sql = (
+        "UPDATE planting_records "
+        "SET predicted_harvest = CASE block_id " + " ".join(case_parts) + " "
+        "ELSE predicted_harvest END "
+        f"WHERE username = ? AND block_id IN ({placeholders}) "
+        "AND (retired = 0 OR retired IS NULL)"
+    )
+    all_params = params + [username] + block_ids
+
     conn = get_db_connection()
     try:
-        for b in computed_blocks:
-            conn.execute(
-                "UPDATE planting_records SET predicted_harvest = ? "
-                "WHERE block_id = ? AND username = ? AND (retired = 0 OR retired IS NULL)",
-                (b["est_harvest_date"], b["block_id"], username)
-            )
+        conn.execute(sql, all_params)
         conn.commit()
     finally:
         conn.close()
