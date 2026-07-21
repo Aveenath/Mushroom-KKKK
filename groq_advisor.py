@@ -1,6 +1,7 @@
 import os
 import json
 import datetime
+import streamlit as st
 from pathlib import Path
 from dotenv import load_dotenv
 from groq import Groq
@@ -349,20 +350,35 @@ def _compute_blocks(blocks, today, daily_series, prior_days_map=None):
         category = _categorize(days_until_harvest)
 
         if source == "model":
-            model_note = " (from the trained harvest model)"
-        else:
-            model_note = ""
-
-        if stress_ratio is None:
+            # The trained model produced target_days directly from engineered
+            # sensor + history features — it did NOT use the base/lo/hi
+            # baseline formula below, so the reason text must describe the
+            # model's own basis instead of borrowing the baseline's wording.
+            if stress_ratio is None:
+                reason = (
+                    f"Predicted by the trained harvest model for this block "
+                    f"({ref_label}) — no sensor history available for this "
+                    f"window, so the model relied on the block's harvest-number, "
+                    f"cycle, and prior-interval features."
+                )
+            else:
+                pct = round(stress_ratio * 100)
+                reason = (
+                    f"Predicted by the trained harvest model for this block "
+                    f"({ref_label}), using {days_with_data}d of sensor data "
+                    f"(avg {avg_temp}°C / {avg_hum}%, {pct}% stress days) plus "
+                    f"this block's own harvest history."
+                )
+        elif stress_ratio is None:
             reason = (
                 f"No sensor history {ref_label} yet — using this farm's historical "
-                f"median of {base} days{model_note}."
+                f"median of {base} days."
             )
         elif stress_ratio == 0:
             reason = (
                 f"Conditions {ref_label} ({days_with_data}d of data) stayed within the "
                 f"good range (avg {avg_temp}°C / {avg_hum}%) — tracking toward the "
-                f"faster end of this farm's historical range ({lo}-{hi}d){model_note}."
+                f"faster end of this farm's historical range ({lo}-{hi}d)."
             )
         else:
             pct = round(stress_ratio * 100)
@@ -370,7 +386,7 @@ def _compute_blocks(blocks, today, daily_series, prior_days_map=None):
                 f"{pct}% of days {ref_label} showed stress conditions "
                 f"(avg {avg_temp}°C / {avg_hum}% humidity, vs. optimal "
                 f"{TEMP_MIN}-{TEMP_MAX}°C / {HUMIDITY_MIN}-{HUMIDITY_MAX}%) — "
-                f"pushed toward the slower end of this farm's historical range ({lo}-{hi}d){model_note}."
+                f"pushed toward the slower end of this farm's historical range ({lo}-{hi}d)."
             )
 
         result.append({
@@ -462,6 +478,19 @@ def compute_harvest_predictions(username):
 
     computed_blocks = _compute_blocks(blocks, today, daily_series, prior_days_map)
     return computed_blocks, None
+
+
+@st.cache_data(ttl=300)
+def refresh_predicted_dates_cached(username):
+    """
+    Cached wrapper around refresh_predicted_dates. The underlying function
+    does a full sensor/DB scan per active block, and without this it would
+    re-run that scan on every single Streamlit rerun (which fires on every
+    widget interaction, not just page loads). This limits it to at most
+    once every 5 minutes per user — predictions stay just as "auto-updating"
+    from the user's point of view, just without redundant repeat work.
+    """
+    return refresh_predicted_dates(username)
 
 
 def refresh_predicted_dates(username):

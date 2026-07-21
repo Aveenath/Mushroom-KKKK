@@ -317,10 +317,12 @@ def show():
 
     # Silent auto-refresh, same as planting.py — keeps predicted_harvest
     # current even if this page is opened without visiting Harvest
-    # Schedule Manager first. No Groq call.
+    # Schedule Manager first. No Groq call. Cached (see groq_advisor.py)
+    # so it re-scans sensors/DB at most once every few minutes instead
+    # of on every single rerun of this page.
     try:
-        from groq_advisor import refresh_predicted_dates
-        refresh_predicted_dates(st.session_state.username)
+        from groq_advisor import refresh_predicted_dates_cached
+        refresh_predicted_dates_cached(st.session_state.username)
     except Exception:
         pass
 

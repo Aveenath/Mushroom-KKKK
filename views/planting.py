@@ -68,8 +68,8 @@ def show():
     # advice paragraph). This keeps saved dates from going stale between
     # manual clicks.
     try:
-        from groq_advisor import refresh_predicted_dates
-        refresh_predicted_dates(st.session_state.username)
+        from groq_advisor import refresh_predicted_dates_cached
+        refresh_predicted_dates_cached(st.session_state.username)
     except Exception:
         pass
 
@@ -136,7 +136,6 @@ def show():
     try:
         from harvest_predictor import load_predictor_metadata, MIN_SAMPLES_TO_TRAIN, build_training_dataframe
         predictor_meta = load_predictor_metadata()
-        current_sample_count = len(build_training_dataframe(st.session_state.username))
         if predictor_meta:
             baseline_n = predictor_meta.get('n_baseline_samples', 0)
             live_n = predictor_meta.get('n_live_samples', predictor_meta['n_samples'])
@@ -147,6 +146,10 @@ def show():
                 f"(last trained {predictor_meta['trained_at'][:10]})"
             )
         else:
+            # Only pay the cost of scanning full training data (one sensor
+            # query per historical harvest row) when there's no metadata
+            # yet — once trained, this branch never runs again.
+            current_sample_count = len(build_training_dataframe(st.session_state.username))
             st.caption(
                 f"🎯 Trained harvest predictor: not trained yet "
                 f"({current_sample_count}/{MIN_SAMPLES_TO_TRAIN} live harvests recorded) "
@@ -246,8 +249,8 @@ def show():
     if st.session_state.get('_record_block_success'):
         st.success(st.session_state.pop('_record_block_success'))
     if st.session_state.get('_record_block_errors'):
-        for e in st.session_state.pop('_record_block_errors'):
-            st.error(e)
+        for err_msg in st.session_state.pop('_record_block_errors'):
+            st.error(err_msg)
 
     with st.form("planting_form"):
         st.caption("For multiple blocks with same planting date, separate IDs with comma e.g. B1, B2, B3")

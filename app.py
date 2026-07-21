@@ -199,7 +199,7 @@ if not st.session_state.logged_in:
                             st.error("Username already exists!")
     st.stop()
 
-# ---- NAVIGATION ----
+# --- NAVIGATION ---
 st.sidebar.markdown(f"**Welcome, {st.session_state.username}!**")
 page = st.sidebar.radio("Go to:", [
     "Dashboard",
