@@ -39,6 +39,14 @@ def show():
             if hc > 0 and not lhd:
                 continue
             next_date = _get_next_harvest(row['planted_date'], hc, lhd)
+
+            pred_col = row.get('predicted_harvest')
+            if pred_col is not None and pd.notna(pred_col) and str(pred_col).strip():
+                try:
+                    next_date = datetime.date.fromisoformat(str(pred_col))
+                except Exception:
+                    pass
+
             diff = (today - next_date).days
             if diff > 0:
                 overdue_blocks.append((row['block_id'], next_date, diff))
@@ -69,6 +77,14 @@ def show():
                 if hc > 0 and not lhd:
                     continue
                 next_date = _get_next_harvest(row['planted_date'], hc, lhd)
+
+                pred_col = row.get('predicted_harvest')
+                if pred_col is not None and pd.notna(pred_col) and str(pred_col).strip():
+                    try:
+                        next_date = datetime.date.fromisoformat(str(pred_col))
+                    except Exception:
+                        pass
+
                 diff = (next_date - today).days
                 if 1 <= diff <= 7:
                     upcoming.append((row['block_id'], next_date, diff))
