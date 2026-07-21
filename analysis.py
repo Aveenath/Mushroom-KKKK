@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 import joblib
+import functools
 from utils import get_db_connection, db_read_sql
 
 
@@ -28,43 +29,23 @@ def _get_metrics(bundle):
     return bundle.get('r2', 0.0), bundle.get('mae', 0.0)
 
 
-def _engineer_on_rolling(df, RPH):
-    df = df.copy()
-    for t in ['temp', 'humidity', 'co2']:
-        if t not in df.columns:
-            continue
-        for label, shift in [('1h',  RPH),    ('2h',  RPH*2),
-                              ('3h',  RPH*3),  ('6h',  RPH*6),
-                              ('12h', RPH*12), ('1d',  RPH*24),
-                              ('2d',  RPH*48), ('3d',  RPH*72),
-                              ('7d',  RPH*168)]:
-            df[f'{t}_lag_{label}'] = df[t].shift(shift)
+@functools.lru_cache(maxsize=8)
+def _load_model_cached(pkl_path):
+    """
+    Cache loaded model bundles in-process so repeated forecast runs (e.g. the
+    user clicking 'Run AI Forecast' multiple times in a session) don't re-read
+    and re-unpickle the .pkl files from disk every time.
+    """
+    return joblib.load(pkl_path)
 
-        for label, w in [('1h',  RPH),   ('3h',  RPH*3),
-                         ('6h',  RPH*6), ('12h', RPH*12), ('24h', RPH*24)]:
-            df[f'{t}_rolling_{label}']     = df[t].rolling(w, min_periods=1).mean()
-            df[f'{t}_rolling_std_{label}'] = df[t].rolling(w, min_periods=1).std()
-            df[f'{t}_rolling_min_{label}'] = df[t].rolling(w, min_periods=1).min()
-            df[f'{t}_rolling_max_{label}'] = df[t].rolling(w, min_periods=1).max()
 
-        df[f'{t}_diff_1h'] = df[t].diff(RPH)
-        df[f'{t}_diff_6h'] = df[t].diff(RPH * 6)
-        df[f'{t}_diff_1d'] = df[t].diff(RPH * 24)
-        df[f'{t}_accel']   = df[t].diff(RPH).diff(RPH)
-
-    if {'temp', 'humidity'}.issubset(df.columns):
-        df['heat_index']          = df['temp'] * df['humidity'] / 100
-        df['temp_humidity_ratio'] = df['temp'] / (df['humidity'] + 1)
-        df['vpd'] = (1 - df['humidity'] / 100) * 0.6108 * np.exp(
-                        17.27 * df['temp'] / (df['temp'] + 237.3))
-
-    if {'temp', 'co2'}.issubset(df.columns):
-        df['temp_co2_interaction'] = df['temp'] * df['co2'] / 1000
-
-    if {'humidity', 'co2'}.issubset(df.columns):
-        df['humidity_co2_ratio'] = df['humidity'] / (df['co2'] + 1) * 100
-
-    return df
+def _load_model(target, df):
+    pkl_path = f'model_{target}.pkl'
+    if os.path.exists(pkl_path):
+        return _load_model_cached(os.path.abspath(pkl_path))
+    if target in df.columns:
+        return _fallback_train(target, df)
+    return None
 
 
 def _fallback_train(target, df):
@@ -104,19 +85,82 @@ def _fallback_train(target, df):
     }
 
 
+# ─────────────────────────────────────────────────────────────────────
+# FAST last-row-only feature engineering
+#
+# The original implementation ran pandas .rolling()/.shift() over the ENTIRE
+# working history (up to RPH*168 rows) at every one of the 42 forecast steps,
+# for each of the 3 targets — 126 full-dataframe recomputations just to read
+# off a single trailing value. Rolling windows only ever look back 24h max,
+# and lag features are just fixed-offset lookups, so all of this can be
+# computed directly from numpy arrays in O(window) instead of O(n).
+# This is the main fix for slow forecast generation.
+# ─────────────────────────────────────────────────────────────────────
+def _last_row_features(values, RPH):
+    """
+    values: dict of column -> 1D numpy array of the full working history
+            (including the newly appended placeholder row).
+    Returns a dict of engineered feature name -> value for just the last row,
+    matching the column names produced by the original _engineer_on_rolling().
+    """
+    feats = {}
+    for t in ('temp', 'humidity', 'co2'):
+        if t not in values:
+            continue
+        arr = values[t]
+        n = len(arr)
+
+        def at(offset, arr=arr, n=n):
+            idx = n - 1 - offset
+            return arr[idx] if idx >= 0 else np.nan
+
+        for label, shift in [('1h', RPH), ('2h', RPH * 2), ('3h', RPH * 3),
+                              ('6h', RPH * 6), ('12h', RPH * 12), ('1d', RPH * 24),
+                              ('2d', RPH * 48), ('3d', RPH * 72), ('7d', RPH * 168)]:
+            feats[f'{t}_lag_{label}'] = at(shift)
+
+        for label, w in [('1h', RPH), ('3h', RPH * 3), ('6h', RPH * 6),
+                          ('12h', RPH * 12), ('24h', RPH * 24)]:
+            window = arr[max(0, n - w):n]
+            feats[f'{t}_rolling_{label}']     = window.mean()
+            feats[f'{t}_rolling_std_{label}'] = window.std(ddof=1) if len(window) > 1 else np.nan
+            feats[f'{t}_rolling_min_{label}'] = window.min()
+            feats[f'{t}_rolling_max_{label}'] = window.max()
+
+        cur = arr[-1]
+        feats[f'{t}_diff_1h'] = cur - at(RPH)
+        feats[f'{t}_diff_6h'] = cur - at(RPH * 6)
+        feats[f'{t}_diff_1d'] = cur - at(RPH * 24)
+        d1 = cur - at(RPH)
+        d2 = at(RPH) - at(RPH * 2)
+        feats[f'{t}_accel'] = d1 - d2
+
+    tv = values.get('temp')
+    hv = values.get('humidity')
+    cv = values.get('co2')
+    if tv is not None and hv is not None:
+        t_, h_ = tv[-1], hv[-1]
+        feats['heat_index']          = t_ * h_ / 100
+        feats['temp_humidity_ratio'] = t_ / (h_ + 1)
+        feats['vpd'] = (1 - h_ / 100) * 0.6108 * np.exp(17.27 * t_ / (t_ + 237.3))
+    if tv is not None and cv is not None:
+        feats['temp_co2_interaction'] = tv[-1] * cv[-1] / 1000
+    if hv is not None and cv is not None:
+        feats['humidity_co2_ratio'] = hv[-1] / (cv[-1] + 1) * 100
+
+    return feats
+
+
 def _predict_future(bundle, history_df, hours=42, step_hours=4):
     model             = bundle['model']
-    selector          = bundle['selector']
     safe_features     = bundle['safe_features']
     selected_features = bundle['selected_features']
     RPH               = bundle.get('RPH', 1)
     target            = bundle['target']
 
     max_lag_rows = RPH * 168 + 10
-    working = history_df[['ts', 'temp', 'humidity', 'co2']].copy()
-    working = working.tail(max_lag_rows).reset_index(drop=True)
+    working = history_df[['ts', 'temp', 'humidity', 'co2']].tail(max_lag_rows).reset_index(drop=True)
     working = _add_temporal(working)
-
     last_ts = working['ts'].max()
 
     clamp = {}
@@ -130,35 +174,38 @@ def _predict_future(bundle, history_df, hours=42, step_hours=4):
         clamp[col] = (lo, hi)
 
     target_std = {}
-    for col in ["temp", "humidity", "co2"]:
+    for col in ('temp', 'humidity', 'co2'):
         if col in history_df.columns:
             target_std[col] = history_df[col].std() * 0.05
+
+    # Plain numpy buffers, extended in place each step — avoids the repeated
+    # pd.concat()+tail() full-frame copy the original did on every iteration.
+    values = {c: working[c].to_numpy(dtype=float).copy() for c in ('temp', 'humidity', 'co2')}
 
     predictions = []
     for h in range(1, hours + 1):
         next_ts = last_ts + pd.Timedelta(hours=h * step_hours)
+        row_t = _add_temporal(pd.DataFrame({'ts': [next_ts]})).iloc[0]
 
-        row = pd.DataFrame({'ts': [next_ts]})
-        row = _add_temporal(row)
-        for col in ['temp', 'humidity', 'co2']:
-            row[col] = working[col].iloc[-1]
+        # carry the last known value forward for all 3 series (same behavior
+        # as the original: non-target series stay flat, target gets predicted)
+        for c in ('temp', 'humidity', 'co2'):
+            values[c] = np.append(values[c], values[c][-1])
 
-        extended = pd.concat([working, row], ignore_index=True)
-        engineered = _engineer_on_rolling(extended, RPH)
+        feats = _last_row_features(values, RPH)
+        for tc in ('hour', 'day_of_week', 'day_of_month', 'month', 'is_weekend',
+                   'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'month_sin', 'month_cos'):
+            feats[tc] = row_t[tc]
 
-        if engineered.empty:
-            predictions.append(np.nan)
-            continue
-
-        last_row = engineered.iloc[[-1]].copy()
-        for m in [f for f in safe_features if f not in last_row.columns]:
-            last_row[m] = 0.0
+        for m in safe_features:
+            if m not in feats:
+                feats[m] = 0.0
 
         try:
-            X_input = last_row[selected_features].values
-            pred    = model.predict(X_input)[0]
+            X_input = np.array([[feats[f] for f in selected_features]])
+            pred = model.predict(X_input)[0]
         except Exception:
-            pred = working[target].iloc[-RPH:].mean()
+            pred = values[target][-1 - RPH:-1].mean()
 
         if target in clamp:
             lo, hi = clamp[target]
@@ -170,26 +217,28 @@ def _predict_future(bundle, history_df, hours=42, step_hours=4):
                 pred = float(np.clip(pred, clamp[target][0], clamp[target][1]))
 
         predictions.append(pred)
-        extended.at[extended.index[-1], target] = pred
-        working = extended.tail(max_lag_rows).reset_index(drop=True)
+        values[target][-1] = pred
+
+        # keep buffers bounded, same as the original tail(max_lag_rows)
+        for c in ('temp', 'humidity', 'co2'):
+            if len(values[c]) > max_lag_rows:
+                values[c] = values[c][-max_lag_rows:]
 
     return np.array(predictions)
 
 
 # ─────────────────────────────────────────────────────────────────────
-# PUBLIC API
+# PUBLIC API (unchanged signatures — drop-in replacement)
 # ─────────────────────────────────────────────────────────────────────
 
 def get_predictions(df=None):
     """Temperature-only forecast — backward compatible with monitor.py."""
     if df is None:
         conn = get_db_connection()
-        # FIX: use db_read_sql instead of pd.read_sql_query
         df = db_read_sql("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
 
-    bundle  = joblib.load('model_temp.pkl') if os.path.exists('model_temp.pkl') \
-              else _fallback_train('temp', df)
+    bundle  = _load_model('temp', df)
     r2, mae = _get_metrics(bundle)
     preds   = _predict_future(bundle, df, hours=168)
     return preds, r2, mae
@@ -198,19 +247,16 @@ def get_predictions(df=None):
 def get_predictions_multi(df=None):
     if df is None:
         conn = get_db_connection()
-        # FIX: use db_read_sql instead of pd.read_sql_query
         df = db_read_sql("SELECT ts, temp, humidity, co2 FROM sensors", conn)
         conn.close()
 
-    for col in ['temp', 'humidity', 'co2']:
+    for col in ('temp', 'humidity', 'co2'):
         if col in df.columns:
             df[col] = df[col].astype(float)
 
     result = {}
-    for target in ['temp', 'humidity', 'co2']:
-        pkl_path = f'model_{target}.pkl'
-        bundle   = joblib.load(pkl_path) if os.path.exists(pkl_path) \
-                   else (_fallback_train(target, df) if target in df.columns else None)
+    for target in ('temp', 'humidity', 'co2'):
+        bundle = _load_model(target, df)
         if bundle is None:
             continue
 

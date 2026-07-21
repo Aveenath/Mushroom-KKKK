@@ -195,6 +195,9 @@ def show():
                     lambda c: f"{cat_map.get(c, '❓')} {c.replace('_', ' ')}"
                 )
 
+                blocks_df["_sort_date"] = pd.to_datetime(blocks_df["est_harvest_date"], errors="coerce")
+                blocks_df = blocks_df.sort_values("_sort_date").drop(columns="_sort_date").reset_index(drop=True)
+
                 # ── Save the AI-adjusted date into predicted_harvest ─────────
                 # Overwrites the existing column (no new columns needed) so
                 # report.py just reads predicted_harvest like it always has.
