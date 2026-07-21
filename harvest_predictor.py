@@ -1,35 +1,3 @@
-"""
-Trainable harvest-date predictor (LightGBM), with auto-retraining.
-
-This is a heavier, more accurate sibling to the EMA-based adaptive
-baseline in groq_advisor.py. That system is a simple running average
-(good default, works from day one). This module is a real trained
-regression model that learns patterns from sensor conditions + harvest
-history — but it needs a reasonable number of samples before it's
-trustworthy, so it's designed to fall back gracefully when data is thin.
-
-═══════════════════════════════════════════════════════════════════════
-WHAT DATA THIS NEEDS (all already in your DB):
-  - planting_records: planted_date, harvest_count, last_harvest_date, cycle
-  - harvest_history:  harvest_number, harvest_date, cycle (per block)
-  - sensors:          temp, humidity, co2, ts  (hourly/periodic readings)
-
-TARGET (y): observed_days = harvest_date - reference_date
-  where reference_date = planted_date (first harvest) or the previous
-  harvest_date (reharvest).
-
-FEATURES (X): engineered from sensor readings across [reference_date, harvest_date]
-  - is_first_harvest, harvest_number, cycle
-  - avg_temp, avg_humidity, avg_co2
-  - temp_min, temp_max, humidity_min, humidity_max
-  - temp_std, humidity_std      (volatility — how stable conditions were)
-  - stress_ratio                (fraction of days that breached thresholds)
-  - days_with_sensor_data       (data coverage / confidence signal)
-  - prior_observed_days         (0 for first harvest; else how long the
-                                  previous cycle for this block took)
-═══════════════════════════════════════════════════════════════════════
-"""
-
 import os
 import json
 import datetime
