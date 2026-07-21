@@ -192,25 +192,6 @@ def show():
                     lambda c: f"{cat_map.get(c, '❓')} {c.replace('_', ' ')}"
                 )
 
-                conn = get_db_connection()
-                db_records = db_read_sql(
-                    "SELECT block_id, planted_date, harvest_count, last_harvest_date "
-                    "FROM planting_records WHERE username = ? AND (retired = 0 OR retired IS NULL)",
-                    conn, params=(st.session_state.username,)
-                )
-                conn.close()
-
-                def _official_date(block_id):
-                    row = db_records[db_records['block_id'] == block_id]
-                    if row.empty:
-                        return "-"
-                    r   = row.iloc[0]
-                    hc  = int(r.get('harvest_count') or 0)
-                    lhd = r.get('last_harvest_date') or None
-                    return str(_get_next_harvest(r['planted_date'], hc, lhd))
-
-                blocks_df["official_date"] = blocks_df["block_id"].apply(_official_date)
-
                 # ── Save the AI-adjusted date into predicted_harvest ─────────
                 # Overwrites the existing column (no new columns needed) so
                 # report.py just reads predicted_harvest like it always has.
@@ -228,15 +209,13 @@ def show():
                 conn_save.close()
                 st.caption("💾 predicted_harvest updated with today's AI-adjusted dates.")
 
-                display_cols = ["block_id", "official_date",
-                                "est_harvest_date", "Status", "reason"]
+                display_cols = ["block_id", "est_harvest_date", "Status", "reason"]
                 display_cols = [c for c in display_cols if c in blocks_df.columns]
 
                 st.dataframe(
                     blocks_df[display_cols].rename(columns={
                         "block_id":           "Block",
-                        "official_date":      "📅 Official Date",
-                        "est_harvest_date":   "🤖 AI Adjusted Date",
+                        "est_harvest_date":   "🤖 Predicted Harvest Date",
                         "reason":             "Reason",
                     }),
                     use_container_width=True,
