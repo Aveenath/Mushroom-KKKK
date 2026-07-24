@@ -7,15 +7,9 @@ from utils import get_db_connection, get_local_now, db_read_sql
 
 def _validate_and_normalize(block_id):
     raw = block_id.strip()
-    if not raw.startswith('B'):
-        return None, "Block ID must start with uppercase 'B' (e.g. B1, B001). Lowercase 'b' is not allowed."
-    match = re.match(r'^B(\d+)$', raw)
-    if not match:
-        return None, "Invalid format. Use B followed by a number only (e.g. B1, B099, B244)."
-    number = int(match.group(1))
-    if number < 1 or number > 244:
-        return None, f"Block number must be between 1 and 244. Got: {number}."
-    return f"B{number}", None
+    if not raw:
+        return None, "Block ID cannot be empty."
+    return raw.upper(), None
 
 
 def _get_next_harvest(planted_date_str, harvest_count, last_harvest_date_str):

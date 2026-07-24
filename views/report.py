@@ -134,15 +134,9 @@ def _build_full_report_pdf(df):
 
 def _validate_and_normalize(block_id):
     raw = block_id.strip()
-    if not raw.startswith('B'):
-        return None, "Block ID must start with uppercase 'B' (e.g. B1, B001)."
-    match = re.match(r'^B(\d+)$', raw)
-    if not match:
-        return None, "Invalid format. Use B followed by a number only."
-    number = int(match.group(1))
-    if number < 1 or number > 244:
-        return None, f"Block number must be between 1 and 244."
-    return f"B{number}", None
+    if not raw:
+        return None, "Block ID cannot be empty."
+    return raw.upper(), None
 
 
 def _get_next_harvest(planted_date_str, harvest_count, last_harvest_date_str):
@@ -216,23 +210,17 @@ def _build_full_report(username):
              .last()
     )
 
-    # Fetch Maziah's sensor-adjusted predicted dates for upcoming harvests
+    # Fetch AI-adjusted predicted dates using the exact same path as AI Harvest Advisor
     try:
-        from groq_advisor import _fetch_sensor_history, _build_sensor_summary, _compute_blocks
-        _conn_s = get_db_connection()
-        _hist, _latest = _fetch_sensor_history(_conn_s)
-        _conn_s.close()
-        _, _flags = _build_sensor_summary(_hist, _latest)
-        _active_blocks = [
-            (str(r['block_id']), str(r['planted_date']),
-             int(r.get('harvest_count') or 0),
-             str(r.get('last_harvest_date') or ''))
-            for _, r in pr_df.iterrows()
-            if not int(r.get('retired') or 0)
-        ]
+        from groq_advisor import _fetch_sensor_history, _build_sensor_summary, _compute_blocks, _fetch_blocks
         import datetime as _dt
+        _conn_ai = get_db_connection()
+        _hist, _latest = _fetch_sensor_history(_conn_ai)
+        _ai_blocks = _fetch_blocks(_conn_ai, username)
+        _conn_ai.close()
+        _, _flags = _build_sensor_summary(_hist, _latest)
         _maziah = {b['block_id']: b['est_harvest_date']
-                   for b in _compute_blocks(_active_blocks, _dt.date.today(), _flags)}
+                   for b in _compute_blocks(list(_ai_blocks), _dt.date.today(), _flags)}
     except Exception:
         _maziah = {}
 
