@@ -47,6 +47,7 @@ def show():
         "ALTER TABLE planting_records ADD COLUMN cycle INTEGER DEFAULT 1",
         "ALTER TABLE harvest_history ADD COLUMN weight_kg REAL",
         "ALTER TABLE harvest_history ADD COLUMN cycle INTEGER DEFAULT 1",
+        "ALTER TABLE harvest_history ADD COLUMN predicted_date_snapshot TEXT",
     ]:
         try:
             conn.execute(alter_sql)
@@ -54,6 +55,17 @@ def show():
         except Exception:
             pass
     conn.close()
+
+    # Silent auto-refresh: recompute predicted_harvest from current sensor
+    # data every time this page loads. No Groq call, no API key needed —
+    # only the "Get AI Recommendation" button below calls Groq (for the
+    # advice paragraph). This keeps saved dates from going stale between
+    # manual clicks.
+    try:
+        from groq_advisor import refresh_predicted_dates_cached
+        refresh_predicted_dates_cached(st.session_state.username)
+    except Exception:
+        pass
 
     # ── SEARCH ────────────────────────────────────────────────────────────────
     st.subheader("🔍 Search Block")
@@ -111,6 +123,43 @@ def show():
         key="lang_planting"
     )
 
+    # ── Trained predictor status + manual retrain ─────────────────────────
+    # The predictor is optional and self-contained: if harvest_predictor.py
+    # isn't importable yet, or nothing's been trained, everything above
+    # still works off the fixed baseline in groq_advisor.py.
+    try:
+        from harvest_predictor import load_predictor_metadata, MIN_SAMPLES_TO_TRAIN, build_training_dataframe
+        predictor_meta = load_predictor_metadata()
+        if predictor_meta:
+            baseline_n = predictor_meta.get('n_baseline_samples', 0)
+            live_n = predictor_meta.get('n_live_samples', predictor_meta['n_samples'])
+            st.caption(
+                f"🎯 Trained harvest predictor: {predictor_meta['n_samples']} samples "
+                f"({baseline_n} from csv baseline + {live_n} from live harvests), "
+                f"cross-validated MAE {predictor_meta['cv_mae_days']}d "
+                f"(last trained {predictor_meta['trained_at'][:10]})"
+            )
+        else:
+            # Only pay the cost of scanning full training data (one sensor
+            # query per historical harvest row) when there's no metadata
+            # yet — once trained, this branch never runs again.
+            current_sample_count = len(build_training_dataframe(st.session_state.username))
+            st.caption(
+                f"🎯 Trained harvest predictor: not trained yet "
+                f"({current_sample_count}/{MIN_SAMPLES_TO_TRAIN} live harvests recorded) "
+                f"— using the fixed baseline until then."
+            )
+        if st.button("🔁 Retrain Predictor Now", help="Force a retrain regardless of the auto-retrain threshold"):
+            from harvest_predictor import maybe_retrain
+            with st.spinner("Training model..."):
+                result = maybe_retrain(st.session_state.username, force=True)
+            if result.get("trained"):
+                st.success(f"✅ Trained on {result['n_samples']} samples — CV MAE: {result['cv_mae_days']} days.")
+            else:
+                st.warning(result.get("reason", "Could not train yet."))
+    except Exception:
+        st.caption("🎯 Trained harvest predictor: not available yet.")
+
     if st.button("🔮 Get AI Recommendation", type="primary"):
         with st.spinner("Getting AI harvest recommendations..."):
             from groq_advisor import get_harvest_advice
@@ -121,6 +170,11 @@ def show():
 
         elif ai_result:
             st.success("✅ AI Analysis Complete!")
+
+            if ai_result.get("model_used"):
+                st.caption("🧠 These predictions came from the trained harvest model.")
+            else:
+                st.caption("📐 Using the fixed baseline — not enough live harvests recorded yet to train the model.")
 
             if ai_result.get("blocks"):
                 st.markdown("#### 🍄 Harvest Predictions per Block")
@@ -135,36 +189,33 @@ def show():
                     lambda c: f"{cat_map.get(c, '❓')} {c.replace('_', ' ')}"
                 )
 
-                conn = get_db_connection()
-                db_records = db_read_sql(
-                    "SELECT block_id, planted_date, harvest_count, last_harvest_date "
-                    "FROM planting_records WHERE username = ? AND (retired = 0 OR retired IS NULL)",
-                    conn, params=(st.session_state.username,)
-                )
-                conn.close()
+                blocks_df["_sort_date"] = pd.to_datetime(blocks_df["est_harvest_date"], errors="coerce")
+                blocks_df = blocks_df.sort_values("_sort_date").drop(columns="_sort_date").reset_index(drop=True)
 
-                def _official_date(block_id):
-                    row = db_records[db_records['block_id'] == block_id]
-                    if row.empty:
-                        return "-"
-                    r   = row.iloc[0]
-                    hc  = int(r.get('harvest_count') or 0)
-                    lhd = r.get('last_harvest_date') or None
-                    return str(_get_next_harvest(r['planted_date'], hc, lhd))
+                # ── Save the AI-adjusted date into predicted_harvest ─────────
+                # Overwrites the existing column (no new columns needed) so
+                # report.py just reads predicted_harvest like it always has.
+                # This is a point-in-time save: it updates now, and stays
+                # until the next time this button is clicked — it does not
+                # silently drift as new sensor readings come in.
+                conn_save = get_db_connection()
+                for _, brow in blocks_df.iterrows():
+                    conn_save.execute(
+                        "UPDATE planting_records SET predicted_harvest = ? "
+                        "WHERE block_id = ? AND username = ? AND (retired = 0 OR retired IS NULL)",
+                        (brow.get("est_harvest_date"), brow["block_id"], st.session_state.username)
+                    )
+                conn_save.commit()
+                conn_save.close()
+                st.caption("💾 predicted_harvest updated with today's AI-adjusted dates.")
 
-                blocks_df["official_date"] = blocks_df["block_id"].apply(_official_date)
-
-                display_cols = ["block_id", "days_planted", "official_date",
-                                "est_harvest_date", "days_until_harvest", "Status", "reason"]
+                display_cols = ["block_id", "est_harvest_date", "Status", "reason"]
                 display_cols = [c for c in display_cols if c in blocks_df.columns]
 
                 st.dataframe(
                     blocks_df[display_cols].rename(columns={
                         "block_id":           "Block",
-                        "days_planted":       "Days Grown",
-                        "official_date":      "📅 Official Date",
-                        "est_harvest_date":   "🤖 AI Adjusted Date",
-                        "days_until_harvest": "Days Until Harvest",
+                        "est_harvest_date":   "🤖 Predicted Harvest Date",
                         "reason":             "Reason",
                     }),
                     use_container_width=True,
@@ -173,19 +224,6 @@ def show():
                         "Reason": st.column_config.TextColumn("Reason", width="large"),
                     }
                 )
-                st.markdown(
-                    "<small>ℹ️ <b>📅 Official Date</b> = fixed schedule based on planting/harvest records.<br>"
-                    "<b>🤖 AI Adjusted Date</b> = estimate only, adjusted for current sensor conditions (CO2, humidity).<br>"
-                    "AI dates do <b>not</b> affect your official schedule.</small>",
-                    unsafe_allow_html=True
-                )
-
-                col1, col2, col3, col4 = st.columns(4)
-                counts = blocks_df["category"].value_counts()
-                col1.metric("🔴 Harvest Today", counts.get("HARVEST_TODAY", 0))
-                col2.metric("🟡 This Week",     counts.get("HARVEST_WEEK",  0))
-                col3.metric("🟢 Monitor",        counts.get("MONITOR",       0))
-                col4.metric("⬛ Wait",           counts.get("WAIT",          0))
             else:
                 st.info("No block predictions returned.")
 
@@ -208,8 +246,8 @@ def show():
     if st.session_state.get('_record_block_success'):
         st.success(st.session_state.pop('_record_block_success'))
     if st.session_state.get('_record_block_errors'):
-        for e in st.session_state.pop('_record_block_errors'):
-            st.error(e)
+        for err_msg in st.session_state.pop('_record_block_errors'):
+            st.error(err_msg)
 
     with st.form("planting_form"):
         st.caption("For multiple blocks with same planting date, separate IDs with comma e.g. B1, A1, Row2")
@@ -310,6 +348,15 @@ def show():
                             new_hc       = int(row.get('harvest_count') or 0) + 1
                             current_cycle = int(row.get('cycle') or 1)
                             harvest_date_str = actual_harvest_date.strftime("%Y-%m-%d")
+
+                            # Snapshot whatever predicted_harvest says right
+                            # now — before it moves on to the next cycle's
+                            # prediction — so report.py can later show what
+                            # the AI actually predicted for THIS harvest,
+                            # instead of losing it to the next refresh.
+                            pred_snapshot = row.get('predicted_harvest')
+                            pred_snapshot = str(pred_snapshot) if (pred_snapshot is not None and str(pred_snapshot).strip()) else None
+
                             conn.execute(
                                 "UPDATE planting_records "
                                 "SET harvest_count = ?, last_harvest_date = ?, retired = ? "
@@ -320,14 +367,37 @@ def show():
                             )
                             weight_val = float(harvest_weight) if harvest_weight and harvest_weight > 0 else None
                             conn.execute(
-                                "INSERT INTO harvest_history (block_id, harvest_number, harvest_date, username, weight_kg, cycle) "
-                                "VALUES (?, ?, ?, ?, ?, ?)",
-                                (selected_block, new_hc, harvest_date_str, st.session_state.username, weight_val, current_cycle)
+                                "INSERT INTO harvest_history "
+                                "(block_id, harvest_number, harvest_date, username, weight_kg, cycle, predicted_date_snapshot) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                (selected_block, new_hc, harvest_date_str, st.session_state.username,
+                                 weight_val, current_cycle, pred_snapshot)
                             )
                             success_list.append(f"{selected_block} (Cycle {current_cycle} #{new_hc})")
                         except Exception:
                             error_list.append(selected_block)
                     conn.commit()
+
+                    # Auto-retrain: every harvest just written to Turso is
+                    # now a new (planted -> harvested) training example.
+                    # This checks the threshold and only actually retrains
+                    # every RETRAIN_EVERY_N_NEW_SAMPLES harvests — cheap to
+                    # call every time, and wrapped so a predictor problem
+                    # never blocks harvest recording from completing.
+                    if success_list:
+                        try:
+                            from harvest_predictor import maybe_retrain
+                            retrain_result = maybe_retrain(st.session_state.username, conn=conn)
+                            if retrain_result.get("trained"):
+                                st.toast(
+                                    f"🎯 Harvest predictor retrained on "
+                                    f"{retrain_result['n_samples']} samples "
+                                    f"(MAE: {retrain_result['cv_mae_days']}d)",
+                                    icon="🧠"
+                                )
+                        except Exception:
+                            pass  # predictor is optional; never block harvest recording
+
                     conn.close()
 
                     if success_list:
