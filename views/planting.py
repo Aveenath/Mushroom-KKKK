@@ -212,8 +212,8 @@ def show():
             st.error(e)
 
     with st.form("planting_form"):
-        st.caption("For multiple blocks with same planting date, separate IDs with comma e.g. B1, B2, B3")
-        block_id    = st.text_input("Block ID(s) (B1 – B244, uppercase B only)")
+        st.caption("For multiple blocks with same planting date, separate IDs with comma e.g. B1, A1, Row2")
+        block_id    = st.text_input("Block ID(s)")
         species     = st.selectbox("Mushroom Species", ["Oyster Mushroom"])
         planted_date = st.date_input("Planting Date", get_local_now().date())
         notes       = st.text_area("Initial Conditions / Notes")
