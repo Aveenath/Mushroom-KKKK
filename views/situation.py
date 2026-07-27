@@ -3,6 +3,7 @@ import os
 import cloudinary
 import cloudinary.uploader
 from utils import get_db_connection, get_local_now
+from translations import t
 
 MAX_PHOTO_BYTES = 5 * 1024 * 1024  # 5 MB limit
 
@@ -28,11 +29,11 @@ def _normalize_block(block_id):
 
 
 def show():
-    st.title("📝 Record Daily Situation")
+    st.title(t('sit_title'))
 
     # --- Photo uploader OUTSIDE form so preview works ---
     uploaded_photo = st.file_uploader(
-        "📷 Disease / Condition Photo (optional — max 5 MB)",
+        t('sit_photo'),
         type=["jpg", "jpeg", "png"],
         help="Attach a photo of the mushroom block condition or disease."
     )
@@ -57,21 +58,21 @@ def show():
         # --- Row 1: Date & Time ---
         col_date, col_time = st.columns(2)
         with col_date:
-            date = st.date_input("Report Date", get_local_now().date())
+            date = st.date_input(t('sit_date'), get_local_now().date())
         with col_time:
-            time = st.time_input("Report Time", get_local_now().time())
+            time = st.time_input(t('sit_time'), get_local_now().time())
 
         # --- Row 2: Block ID ---
-        selected_block = st.text_input("Block ID", placeholder="e.g. B1, B099, B244")
+        selected_block = st.text_input(t('sit_block_id'), placeholder="e.g. B1, B099, B244")
         selected_section = "-"
 
         # --- Situation ---
-        status = st.selectbox("Current Situation", ["Normal", "Harvesting", "Disease Detected", "Maintenance"])
+        status = st.selectbox(t('sit_situation'), ["Normal", "Harvesting", "Disease Detected", "Maintenance"])
 
         # --- Quality ---
-        st.markdown("**Mushroom Quality**")
+        st.markdown(f"**{t('sit_quality')}**")
         quality = st.radio(
-            "Mushroom Quality",
+            t('sit_quality'),
             options=["🔴 Bad", "🟡 Normal", "🟢 Good"],
             index=1,
             horizontal=True,
@@ -79,12 +80,12 @@ def show():
         )
 
         # --- Disease ---
-        disease = st.text_input("Disease Name (leave blank if none)", placeholder="e.g. Trichoderma, Neurospora")
+        disease = st.text_input(t('sit_disease'), placeholder="e.g. Trichoderma, Neurospora")
 
         # --- Notes ---
-        notes = st.text_area("Detailed Notes", placeholder="Describe conditions, observations, or actions taken...")
+        notes = st.text_area(t('sit_notes'), placeholder="Describe conditions, observations, or actions taken...")
 
-        if st.form_submit_button("💾 Save Report", use_container_width=True, type="primary"):
+        if st.form_submit_button(t('sit_save'), use_container_width=True, type="primary"):
             report_datetime = f"{date} {time.strftime('%H:%M')}"
             clean_quality = quality.split(" ", 1)[1]
             disease_val = disease.strip() if disease.strip() else "None"

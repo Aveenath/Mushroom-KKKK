@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 from utils import get_db_connection, get_local_now, db_read_sql
+from translations import t
 
 
 def _get_next_harvest(planted_date_str, harvest_count, last_harvest_date_str):
@@ -12,9 +13,9 @@ def _get_next_harvest(planted_date_str, harvest_count, last_harvest_date_str):
 
 
 def show():
-    st.title(f"🍄 Welcome, {st.session_state.username}!")
+    st.title(f"🍄 {t('dash_today'[:-5] if False else t('nav_welcome'))}, {st.session_state.username}!")
     today = get_local_now().date()
-    st.caption(f"Today: {today.strftime('%A, %d %B %Y')}")
+    st.caption(f"{t('dash_today')}: {today.strftime('%A, %d %B %Y')}")
     st.markdown("---")
 
     conn = get_db_connection()
@@ -56,10 +57,10 @@ def show():
             pass
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("🌱 Active Blocks",   len(active_df))
-    m2.metric("⬛ Retired Blocks",  len(retired_df))
-    m3.metric("🔴 Overdue Harvest", len(overdue_blocks))
-    m4.metric("🟢 Due Today",       len(due_today_blocks))
+    m1.metric(t('dash_active'),   len(active_df))
+    m2.metric(t('dash_retired'),  len(retired_df))
+    m3.metric(t('dash_overdue'),  len(overdue_blocks))
+    m4.metric(t('dash_due_today'),len(due_today_blocks))
 
     st.markdown("---")
 
@@ -67,7 +68,7 @@ def show():
 
     # ── Harvest alerts ─────────────────────────────────────────────────────────
     with col_left:
-        st.subheader("🍄 Harvest Status")
+        st.subheader(t('dash_harvest_status'))
 
         upcoming = []
         for _, row in active_df.iterrows():
@@ -94,44 +95,44 @@ def show():
 
         LIMIT = 10
         tab_overdue, tab_today, tab_week = st.tabs([
-            f"🔴 Overdue ({len(overdue_blocks)})",
-            f"✅ Due Today ({len(due_today_blocks)})",
-            f"📅 This Week ({len(upcoming)})",
+            t('dash_tab_overdue', n=len(overdue_blocks)),
+            t('dash_tab_today',   n=len(due_today_blocks)),
+            t('dash_tab_week',    n=len(upcoming)),
         ])
 
         with tab_overdue:
             if overdue_blocks:
                 with st.container(height=300):
                     for block_id, date, days in overdue_blocks[:LIMIT]:
-                        st.error(f"**{block_id}** — overdue by **{days} day(s)** (was due {date})")
+                        st.error(f"**{block_id}** — {t('dash_overdue_msg', d=days, date=date)}")
                 if len(overdue_blocks) > LIMIT:
-                    st.caption(f"Showing {LIMIT} of {len(overdue_blocks)} overdue blocks.")
+                    st.caption(t('dash_showing', n=LIMIT, total=len(overdue_blocks)))
             else:
-                st.success("No overdue blocks.")
+                st.success(t('dash_no_overdue'))
 
         with tab_today:
             if due_today_blocks:
                 with st.container(height=300):
                     for block_id, date in due_today_blocks[:LIMIT]:
-                        st.success(f"**{block_id}** — due **TODAY** ({date})")
+                        st.success(f"**{block_id}** — {t('dash_today_msg', date=date)}")
                 if len(due_today_blocks) > LIMIT:
-                    st.caption(f"Showing {LIMIT} of {len(due_today_blocks)} blocks due today.")
+                    st.caption(t('dash_showing', n=LIMIT, total=len(due_today_blocks)))
             else:
-                st.info("No blocks due today.")
+                st.info(t('dash_no_today'))
 
         with tab_week:
             if upcoming:
                 with st.container(height=300):
                     for block_id, date, days in upcoming[:LIMIT]:
-                        st.info(f"**{block_id}** — in {days} day(s) ({date})")
+                        st.info(f"**{block_id}** — {t('dash_week_msg', d=days, date=date)}")
                 if len(upcoming) > LIMIT:
-                    st.caption(f"Showing {LIMIT} of {len(upcoming)} blocks due this week.")
+                    st.caption(t('dash_showing', n=LIMIT, total=len(upcoming)))
             else:
-                st.info("No blocks due in the next 7 days.")
+                st.info(t('dash_no_week'))
 
     # ── Live sensor snapshot ───────────────────────────────────────────────────
     with col_right:
-        st.subheader("📡 Live Sensor Snapshot")
+        st.subheader(t('dash_sensor'))
         if not sensor_df.empty:
             latest = sensor_df.iloc[0]
             temp_val = float(latest['temp'])
@@ -150,14 +151,14 @@ def show():
                 st.caption(f"Last sync: {latest['ts']}")
 
             if hum_val < 80:
-                st.error("💧 Humidity low — turn misting ON")
+                st.error(t('dash_hum_low'))
             elif hum_val > 90:
-                st.warning("✅ Humidity high — turn misting OFF")
+                st.warning(t('dash_hum_high'))
             if temp_val > 30:
-                st.error("🌡️ Temperature too high — check ventilation")
+                st.error(t('dash_temp_high'))
         else:
-            st.info("No sensor data. Open Live Monitor to sync.")
+            st.info(t('dash_no_sensor'))
 
 
     st.markdown("---")
-    st.caption("Use the sidebar to navigate. Go to **Live Monitor** to sync fresh sensor data.")
+    st.caption(t('dash_hint'))

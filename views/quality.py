@@ -5,6 +5,7 @@ import re
 import base64
 import datetime
 from utils import get_db_connection, db_read_sql
+from translations import t
 
 
 def _safe(text):
@@ -71,17 +72,34 @@ def _parse_section(row):
 
 
 def show():
-    st.title("📈 Quality & Disease Analysis")
+    st.title(t('qa_title'))
+
+    # Admin user selector
+    if st.session_state.get('role') == 'majikan':
+        conn_u = get_db_connection()
+        users_df = db_read_sql(
+            "SELECT username FROM users WHERE role != 'majikan' ORDER BY username", conn_u
+        )
+        conn_u.close()
+        if users_df.empty:
+            st.info(t('admin_no_workers'))
+            return
+        view_username = st.selectbox(
+            t('qa_viewing'), users_df['username'].tolist(), key="qa_user_select"
+        )
+        st.markdown("---")
+    else:
+        view_username = st.session_state.username
 
     conn = get_db_connection()
     reports_df = db_read_sql(
         "SELECT date, block_id, section_id, status, quality, disease_noted, notes, photo FROM situation_reports WHERE username = ? ORDER BY date DESC",
-        conn, params=(st.session_state.username,)
+        conn, params=(view_username,)
     )
     conn.close()
 
     if reports_df.empty:
-        st.info("No reports found. Start recording in the 'Record Situation' tab.")
+        st.info(t('qa_no_reports'))
         return
 
     # Clean columns
@@ -95,7 +113,7 @@ def show():
     }, inplace=True)
 
     # --- CHARTS (always visible, no toggle) ---
-    st.subheader("📊 Executive Summary")
+    st.subheader(t('qa_exec'))
     col1, col2 = st.columns(2)
     with col1:
         fig_pie = px.pie(reports_df, names='Quality', title='Overall Harvest Quality', hole=0.3)
@@ -110,17 +128,17 @@ def show():
 
     # --- TABLE with toggle ---
     st.markdown("---")
-    st.subheader("📝 Complete Log Repository")
+    st.subheader(t('qa_log'))
 
     export_cols = [c for c in reports_df.columns if c != 'photo']
     dl_col1, dl_col2 = st.columns(2)
     with dl_col1:
         csv = reports_df[export_cols].to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Export Full Logs (CSV)", data=csv,
+        st.download_button(t('qa_export_csv'), data=csv,
                            file_name="mushroom_farm_reports.csv", mime="text/csv",
                            use_container_width=True)
 
-    view_mode = st.radio("View table by:", ["Block", "Section"], horizontal=True)
+    view_mode = st.radio(t('qa_view_by'), ["Block", "Section"], horizontal=True)
 
     if view_mode == "Block":
         display_df = reports_df[reports_df['Block'] != '-'][
@@ -152,7 +170,7 @@ def show():
         pdf_df = display_df[[c for c in display_df.columns if c != "Delete?"]].copy()
         pdf_bytes = _quality_pdf(pdf_df, view_mode)
         st.download_button(
-            f"📄 Export Current View (PDF)",
+            t('qa_export_pdf'),
             data=pdf_bytes,
             file_name=f"quality_report_{datetime.date.today()}.pdf",
             mime="application/pdf",
@@ -166,7 +184,7 @@ def show():
             conn = get_db_connection()
             for dt in rows_to_delete['Date & Time']:
                 conn.execute("DELETE FROM situation_reports WHERE date = ? AND username = ?",
-                             (dt, st.session_state.username))
+                             (dt, view_username))
             conn.commit()
             conn.close()
             st.success("Logs successfully deleted!")
@@ -202,7 +220,7 @@ def show():
                 conn.execute(
                     "UPDATE situation_reports SET status = ?, quality = ?, disease_noted = ?, notes = ? "
                     "WHERE date = ? AND username = ?",
-                    (new_status, new_quality, disease_val, new_notes, selected_dt, st.session_state.username)
+                    (new_status, new_quality, disease_val, new_notes, selected_dt, view_username)
                 )
                 conn.commit()
                 conn.close()

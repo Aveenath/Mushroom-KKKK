@@ -3,6 +3,7 @@ import pandas as pd
 import datetime
 import re
 from utils import get_db_connection, get_local_now, db_read_sql
+from translations import t
 
 
 def _safe(text):
@@ -313,23 +314,36 @@ def _build_full_report(username):
 
 
 def show():
-    st.title("📊 Generate Report")
+    st.title(t('rep_title'))
 
-    # Silent auto-refresh, same as planting.py — keeps predicted_harvest
-    # current even if this page is opened without visiting Harvest
-    # Schedule Manager first. No Groq call. Cached (see groq_advisor.py)
-    # so it re-scans sensors/DB at most once every few minutes instead
-    # of on every single rerun of this page.
+    # Admin user selector
+    if st.session_state.get('role') == 'majikan':
+        conn_u = get_db_connection()
+        users_df = db_read_sql(
+            "SELECT username FROM users WHERE role != 'majikan' ORDER BY username", conn_u
+        )
+        conn_u.close()
+        if users_df.empty:
+            st.info(t('admin_no_workers'))
+            return
+        view_username = st.selectbox(
+            t('rep_viewing'), users_df['username'].tolist(), key="report_user_select"
+        )
+        st.markdown("---")
+    else:
+        view_username = st.session_state.username
+
+    # Silent auto-refresh — keeps predicted_harvest current
     try:
         from groq_advisor import refresh_predicted_dates_cached
-        refresh_predicted_dates_cached(st.session_state.username)
+        refresh_predicted_dates_cached(view_username)
     except Exception:
         pass
 
     # ── SECTION 1: Block Harvest Detail ───────────────────────────────────────
-    st.subheader("🔍 Block Harvest Detail")
-    search_id = st.text_input("Enter Block ID (e.g. B1, B5)", key="block_search_input")
-    do_search = st.button("🔍 Search")
+    st.subheader(t('rep_detail'))
+    search_id = st.text_input(t('rep_search'), key="block_search_input")
+    do_search = st.button(t('rep_search_btn'))
 
     if do_search:
         st.session_state['report_search_id'] = search_id.strip()
@@ -346,7 +360,7 @@ def show():
             conn = get_db_connection()
             all_cycles = db_read_sql(
                 "SELECT * FROM planting_records WHERE block_id = ? AND username = ? ORDER BY cycle ASC",
-                conn, params=(norm_id, st.session_state.username)
+                conn, params=(norm_id, view_username)
             )
             conn.close()
 
@@ -376,7 +390,7 @@ def show():
                 history_df = db_read_sql(
                     "SELECT harvest_number, harvest_date, weight_kg, predicted_date_snapshot FROM harvest_history "
                     "WHERE block_id = ? AND username = ? AND cycle = ? ORDER BY harvest_number ASC",
-                    conn_h, params=(norm_id, st.session_state.username, cycle)
+                    conn_h, params=(norm_id, view_username, cycle)
                 )
                 conn_h.close()
 
@@ -385,7 +399,7 @@ def show():
                 sit_df = db_read_sql(
                     "SELECT date, status, disease_noted, quality, notes FROM situation_reports "
                     "WHERE block_id = ? AND username = ? ORDER BY date ASC",
-                    conn_s, params=(norm_id, st.session_state.username)
+                    conn_s, params=(norm_id, view_username)
                 )
                 conn_s.close()
 
@@ -528,7 +542,7 @@ def show():
                             conn_edit.execute(
                                 "UPDATE harvest_history SET weight_kg = ? "
                                 "WHERE block_id = ? AND username = ? AND cycle = ? AND harvest_number = ?",
-                                (weight_val, norm_id, st.session_state.username, cycle, edit_harvest_num)
+                                (weight_val, norm_id, view_username, cycle, edit_harvest_num)
                             )
                             conn_edit.commit()
                             conn_edit.close()
@@ -546,11 +560,11 @@ def show():
                         conn_del = get_db_connection()
                         conn_del.execute(
                             "DELETE FROM planting_records WHERE block_id = ? AND username = ? AND cycle = ?",
-                            (norm_id, st.session_state.username, cycle)
+                            (norm_id, view_username, cycle)
                         )
                         conn_del.execute(
                             "DELETE FROM harvest_history WHERE block_id = ? AND username = ? AND cycle = ?",
-                            (norm_id, st.session_state.username, cycle)
+                            (norm_id, view_username, cycle)
                         )
                         conn_del.commit()
                         conn_del.close()
@@ -559,10 +573,10 @@ def show():
 
     # ── SECTION 2: Full Report ─────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("📋 Full Report")
+    st.subheader(t('rep_full'))
 
-    if st.button("📊 View Full Report", type="primary"):
-        full_df = _build_full_report(st.session_state.username)
+    if st.button(t('rep_view_full'), type="primary"):
+        full_df = _build_full_report(view_username)
         if full_df.empty:
             st.info("No planting records found.")
         else:

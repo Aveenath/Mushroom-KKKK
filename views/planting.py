@@ -1,6 +1,7 @@
 import streamlit as st
 import datetime
 from utils import get_db_connection, get_local_now, db_read_sql
+from translations import t
 
 
 def _validate_and_normalize(block_id):
@@ -34,7 +35,7 @@ def _get_status(next_harvest_date):
 
 
 def show():
-    st.title("🌱 Harvest Schedule Manager")
+    st.title(t('plant_title'))
 
     # Add new columns to existing tables if not yet present
     conn = get_db_connection()
@@ -66,7 +67,7 @@ def show():
         pass
 
     # ── RECORD NEW BLOCK ──────────────────────────────────────────────────────
-    st.subheader("➕ Record New Block")
+    st.subheader(t('plant_new_block'))
 
     if st.session_state.get('_record_block_success'):
         st.success(st.session_state.pop('_record_block_success'))
@@ -75,13 +76,13 @@ def show():
             st.error(err_msg)
 
     with st.form("planting_form"):
-        st.caption("For multiple blocks with same planting date, separate IDs with comma e.g. B1, A1, Row2")
-        block_id    = st.text_input("Block ID(s)")
-        species     = st.selectbox("Mushroom Species", ["Oyster Mushroom"])
-        planted_date = st.date_input("Planting Date", get_local_now().date())
-        notes       = st.text_area("Initial Conditions / Notes")
+        st.caption(t('plant_caption'))
+        block_id    = st.text_input(t('plant_block_id'))
+        species     = st.selectbox(t('plant_species'), ["Oyster Mushroom"])
+        planted_date = st.date_input(t('plant_date'), get_local_now().date())
+        notes       = st.text_area(t('plant_notes'))
 
-        if st.form_submit_button("Record Block"):
+        if st.form_submit_button(t('plant_submit')):
             if not block_id.strip():
                 st.error("Please enter at least one Block ID.")
             else:
@@ -130,7 +131,7 @@ def show():
     st.markdown("---")
 
     # ── MARK AS HARVESTED / RETIRE ────────────────────────────────────────────
-    st.subheader("✅ Mark Block as Harvested")
+    st.subheader(t('plant_mark'))
     if st.session_state.get('_harvest_success'):
         st.success(st.session_state.pop('_harvest_success'))
     if st.session_state.get('_harvest_error'):
@@ -146,15 +147,15 @@ def show():
     if not active_blocks_df.empty:
         with st.form("mark_harvested_form"):
             selected_blocks     = st.multiselect(
-                "Select Block(s) to Harvest",
+                t('plant_select'),
                 active_blocks_df['block_id'].tolist(),
                 placeholder="Select one or more blocks..."
             )
-            actual_harvest_date = st.date_input("Actual Harvest Date", get_local_now().date())
-            harvest_weight      = st.number_input("Total Harvest Weight (kg)", min_value=0.0, step=0.1, format="%.2f")
-            retire_block        = st.checkbox("Retire all selected blocks after this harvest")
+            actual_harvest_date = st.date_input(t('plant_harvest_date'), get_local_now().date())
+            harvest_weight      = st.number_input(t('plant_weight'), min_value=0.0, step=0.1, format="%.2f")
+            retire_block        = st.checkbox(t('plant_retire'))
 
-            if st.form_submit_button("✅ Confirm"):
+            if st.form_submit_button(t('plant_confirm')):
                 if not selected_blocks:
                     st.warning("Please select at least one block.")
                 else:
@@ -234,6 +235,6 @@ def show():
                         st.session_state['_harvest_error'] = f"❌ Failed: {', '.join(error_list)}"
                     st.rerun()
     else:
-        st.info("No active blocks. All blocks are retired or none recorded yet.")
+        st.info(t('plant_no_active'))
 
-    st.caption("💡 To view the full harvest schedule and block reports, go to **Generate Report** in the sidebar.")
+    st.caption(t('plant_hint'))
