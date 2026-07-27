@@ -271,24 +271,31 @@ if not st.session_state.logged_in:
     col1, col2, col3 = st.columns([1, 1.2, 1])
     with col2:
         st.markdown(f"""
-            <div style='text-align:center; padding-bottom:14px;'>
+            <div style='text-align:center; padding-bottom:20px;'>
                 <div class='login-title-glow'
-                     style='display:inline-flex; align-items:center; gap:16px; justify-content:center;'>
+                     style='display:inline-flex; align-items:center; gap:18px;
+                            justify-content:center; margin-bottom:14px;'>
                     <img src='data:image/png;base64,{_kkc_b64}'
-                         style='height:72px; object-fit:contain;
-                                filter:drop-shadow(0 4px 18px rgba(0,0,0,0.55));'>
-                    <h1 style='color:#5dba60; font-size:3.9rem; font-weight:800; margin:0;
-                               letter-spacing:-0.02em; line-height:1.1;
-                               text-shadow:0 0 40px rgba(76,175,80,0.45);'>
-                        Mushroom OS
-                    </h1>
+                         style='height:78px; width:78px; object-fit:cover;
+                                border-radius:18px;
+                                box-shadow:0 6px 24px rgba(0,0,0,0.55),
+                                           0 0 0 2px rgba(255,255,255,0.08);'>
+                    <div style='text-align:left;'>
+                        <h1 style='color:#5dba60; font-size:3.6rem; font-weight:800; margin:0;
+                                   letter-spacing:-0.025em; line-height:1;
+                                   text-shadow:0 0 36px rgba(76,175,80,0.45);'>
+                            Mushroom OS
+                        </h1>
+                        <div style='color:#556655; font-size:0.72rem; font-weight:600;
+                                    letter-spacing:0.12em; text-transform:uppercase;
+                                    margin-top:5px;'>
+                            Kolej Komuniti Chenderoh
+                        </div>
+                    </div>
                 </div>
-                <p style='color:#8a8a8a; font-size:1rem; margin-top:12px; letter-spacing:0.025em;'>
+                <p style='color:#707070; font-size:0.92rem; margin:0; letter-spacing:0.025em;'>
                     {t('login_subtitle')}
                 </p>
-                <div style='color:#606060; font-size:0.78rem; margin-top:4px; letter-spacing:0.04em;'>
-                    Kolej Komuniti Chenderoh
-                </div>
             </div>
         """, unsafe_allow_html=True)
 
