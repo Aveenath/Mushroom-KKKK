@@ -4,7 +4,7 @@ import bcrypt
 from utils import get_db_connection
 from translations import t
 
-st.set_page_config(page_title="Mushroom Farm OS", layout="wide")
+st.set_page_config(page_title="Projek Cendawan Berintegrasi AI", layout="wide")
 
 if 'last_processed_file' not in st.session_state:
     st.session_state.last_processed_file = None
@@ -281,10 +281,10 @@ if not st.session_state.logged_in:
                                 box-shadow:0 6px 24px rgba(0,0,0,0.55),
                                            0 0 0 2px rgba(255,255,255,0.08);'>
                     <div style='text-align:left;'>
-                        <h1 style='color:#5dba60; font-size:3.6rem; font-weight:800; margin:0;
-                                   letter-spacing:-0.025em; line-height:1;
+                        <h1 style='color:#5dba60; font-size:2.0rem; font-weight:800; margin:0;
+                                   letter-spacing:-0.01em; line-height:1.25;
                                    text-shadow:0 0 36px rgba(76,175,80,0.45);'>
-                            Mushroom OS
+                            Projek Cendawan<br>Berintegrasi AI
                         </h1>
                         <div style='color:#556655; font-size:0.72rem; font-weight:600;
                                     letter-spacing:0.12em; text-transform:uppercase;
@@ -296,6 +296,13 @@ if not st.session_state.logged_in:
                 <p style='color:#707070; font-size:0.92rem; margin:0; letter-spacing:0.025em;'>
                     {t('login_subtitle')}
                 </p>
+                <div style='margin-top:10px; color:#445544; font-size:0.7rem;
+                            letter-spacing:0.1em; text-transform:uppercase; font-weight:500;'>
+                    In collaboration with &nbsp;
+                    <span style='color:#5a7a5a; font-weight:700;'>
+                        Universiti Sains Malaysia (USM)
+                    </span>
+                </div>
             </div>
         """, unsafe_allow_html=True)
 

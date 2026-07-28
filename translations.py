@@ -18,7 +18,7 @@ TRANSLATIONS = {
         'nav_Admin Panel':        'Admin Panel',
 
         # LOGIN
-        'login_title':        '🍄 Mushroom OS',
+        'login_title':        '🍄 Projek Cendawan Berintegrasi AI',
         'login_subtitle':     'Please log in to access your secure farm dashboard.',
         'login_tab':          '🔒 Log In',
         'signup_tab':         '📝 Sign Up',
@@ -175,7 +175,7 @@ TRANSLATIONS = {
         'nav_Admin Panel':        'Panel Admin',
 
         # LOGIN
-        'login_title':        '🍄 Sistem OS Cendawan',
+        'login_title':        '🍄 Projek Cendawan Berintegrasi AI',
         'login_subtitle':     'Sila log masuk untuk akses papan pemuka ladang anda.',
         'login_tab':          '🔒 Log Masuk',
         'signup_tab':         '📝 Daftar',
@@ -332,7 +332,7 @@ TRANSLATIONS = {
         'nav_Admin Panel':        '管理面板',
 
         # LOGIN
-        'login_title':        '🍄 蘑菇农场系统',
+        'login_title':        '🍄 Projek Cendawan Berintegrasi AI',
         'login_subtitle':     '请登录以访问您的农场控制台。',
         'login_tab':          '🔒 登录',
         'signup_tab':         '📝 注册',
