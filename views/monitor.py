@@ -44,7 +44,7 @@ def show():
         key="monitor_autorefresh"
     )
 
-    st.title("📊 Forecasting")
+    st.title(" Real Time Prediction(Cabin Conditions)")
 
     # ── Sync from SmartSense ───────────────────────────────────────────────────
     try:
@@ -71,7 +71,7 @@ def show():
 
     # ── AI Equipment Recommendation ───────────────────────────────────────────
     st.markdown("---")
-    st.subheader("🤖 AI Equipment Recommendation")
+    st.subheader("🤖 AI Water Mist Action")
 
     LANG_OPTIONS = ["English", "BM", "Mandarin", "Tamil", "Japanese"]
     if "groq_lang" not in st.session_state:
@@ -124,7 +124,7 @@ def show():
 
     # ── Outside Weather ────────────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("🌦️ Outside Weather (Live & Forecast)")
+    st.subheader("🌦️ Local Weather (Live & Forecast)")
     st.markdown("**Farm Location:** Perak (Kuala Kangsar), MY")
 
     lat, lon = 4.7730, 100.9410
@@ -144,8 +144,8 @@ def show():
         curr_hum  = res['current']['relative_humidity_2m']
 
         w_col1, w_col2 = st.columns(2)
-        w_col1.metric("Outside Temp",     f"{curr_temp}°C")
-        w_col2.metric("Outside Humidity", f"{curr_hum}%")
+        w_col1.metric("Temp",     f"{curr_temp}°C")
+        w_col2.metric("Humidity", f"{curr_hum}%")
 
         df_weather = pd.DataFrame({
             'Time':              res['hourly']['time'],
@@ -187,9 +187,9 @@ def show():
         latest_ts_str = str(df['ts'].iloc[-1])
     st.caption(f"📡 Using {len(df)} live readings — latest: {latest_ts_str}")
 
-    uploaded_csv = st.file_uploader(
-        "📂 Upload Sensor CSV (Optional — overrides live data)", type=['csv']
-    )
+    #uploaded_csv = st.file_uploader(
+    #    "📂 Upload Sensor CSV (Optional — overrides live data)", type=['csv']
+    #)
 
     if st.button("🔄 Run AI Forecast", type="primary"):
         with st.spinner("Loading AI models and generating forecast..."):
