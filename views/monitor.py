@@ -118,7 +118,7 @@ def show():
         else:
             mist_color = "🔵"   # MAINTAIN
 
-        st.markdown(f"### 💧 Mist — {mist_color} **{mist_status}**")
+        st.markdown(f"### 💧 Water Mist — {mist_color} **{mist_status}**")
         st.info(mist.get("reason", ""))
 
         summary = _normalise_summary(result.get("summary", ""))
@@ -180,7 +180,7 @@ def show():
     st.markdown("---")
     st.subheader("🔮 7-Day Data Projection")
     st.write(
-        "Uses pre-trained AI models to forecast Temperature, Humidity, and CO2 "
+        "This data prediction based on AI models to forecast Temperature, Humidity, and CO2 "
         "for the next 7 days, based on live synced sensor data."
     )
     try:
@@ -266,9 +266,9 @@ def show():
             'co2':      'Predicted CO2 (ppm)',
         }
         titles = {
-            'temp':     'Temperature Forecast — Next 7 Days',
-            'humidity': 'Humidity Forecast — Next 7 Days',
-            'co2':      'CO2 Level Forecast — Next 7 Days',
+            'temp':     'Temperature(Data Projection for Next 7 Days)',
+            'humidity': 'Humidity (Data Projection for Next 7 Days)',
+            'co2':      'CO2 (Data Projection for Next 7 Days)',
         }
 
         tab_list = st.tabs([labels[t] for t in multi.keys()])
