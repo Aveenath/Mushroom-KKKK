@@ -45,6 +45,9 @@ def show():
     )
 
     st.title(" Real Time Prediction(Cabin Conditions)")
+    st.write(
+        "This page updates the latest sensor readings every minute from the mushroom cabinet. "
+    )
 
     # ── Sync from SmartSense ───────────────────────────────────────────────────
     try:
