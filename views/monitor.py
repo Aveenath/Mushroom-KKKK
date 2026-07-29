@@ -178,7 +178,7 @@ def show():
 
     # ── 7-Day Predictive Forecast ──────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("🔮 7-Day Predictive Forecast")
+    st.subheader("🔮 7-Day Data Projection")
     st.write(
         "Uses pre-trained AI models to forecast Temperature, Humidity, and CO2 "
         "for the next 7 days, based on live synced sensor data."
@@ -193,6 +193,7 @@ def show():
     #uploaded_csv = st.file_uploader(
     #    "📂 Upload Sensor CSV (Optional — overrides live data)", type=['csv']
     #)
+    uploaded_csv = None  # uploader hidden — set to None so existing logic still works
 
     if st.button("🔄 Run AI Forecast", type="primary"):
         with st.spinner("Loading AI models and generating forecast..."):
@@ -251,11 +252,12 @@ def show():
 
         labels      = {'temp': '🌡️ Temperature', 'humidity': '💧 Humidity', 'co2': '🌿 CO2'}
         units       = {'temp': '°C',             'humidity': '%',            'co2': 'ppm'}
-        metric_cols = st.columns(len(multi))
-        for i, (target, data) in enumerate(multi.items()):
-            with metric_cols[i]:
-                st.metric(f"{labels[target]} R²",  f"{data['r2'] * 100:.1f}%")
-                st.metric(f"{labels[target]} MAE", f"±{data['mae']:.2f} {units[target]}")
+        if False:  # hidden — re-enable to show R² / MAE metrics
+            metric_cols = st.columns(len(multi))
+            for i, (target, data) in enumerate(multi.items()):
+                with metric_cols[i]:
+                    st.metric(f"{labels[target]} R²",  f"{data['r2'] * 100:.1f}%")
+                    st.metric(f"{labels[target]} MAE", f"±{data['mae']:.2f} {units[target]}")
 
         colors = {'temp': '#FF4B4B', 'humidity': '#4B9EFF', 'co2': '#4BFF91'}
         y_axis = {
