@@ -159,7 +159,7 @@ def show():
                 if not selected_blocks:
                     st.warning("Please select at least one block.")
                 else:
-                    success_list, error_list = [], []
+                    success_list, error_list, duplicate_list = [], [], []
                     conn = get_db_connection()
                     for selected_block in selected_blocks:
                         try:
@@ -171,6 +171,16 @@ def show():
                                 error_list.append(selected_block)
                                 continue
                             row          = row_df.iloc[0]
+                            harvest_date_str = actual_harvest_date.strftime("%Y-%m-%d")
+                            # --- NEW: duplicate check ---
+                            dup_df = db_read_sql(
+                                "SELECT 1 FROM harvest_history WHERE block_id = ? AND username = ? AND harvest_date = ? LIMIT 1",
+                                 conn, params=(selected_block, st.session_state.username, harvest_date_str)
+                            )
+                            if not dup_df.empty:
+                                duplicate_list.append(selected_block)
+                                continue
+
                             new_hc       = int(row.get('harvest_count') or 0) + 1
                             current_cycle = int(row.get('cycle') or 1)
                             harvest_date_str = actual_harvest_date.strftime("%Y-%m-%d")
@@ -226,15 +236,25 @@ def show():
 
                     conn.close()
 
+                    try:
+                        from groq_advisor import refresh_predicted_dates_cached
+                        refresh_predicted_dates_cached.clear()
+                    except Exception:
+                        pass
+
                     if success_list:
                         if retire_block:
                             st.session_state['_harvest_success'] = f"✅ Retired: {', '.join(success_list)}"
                         else:
-                            st.session_state['_harvest_success'] = f"✅ Harvested: {', '.join(success_list)} — Next harvest in 15 days!"
+                            st.session_state['_harvest_success'] = f"✅ Harvested: {', '.join(success_list)}"
                     if error_list:
                         st.session_state['_harvest_error'] = f"❌ Failed: {', '.join(error_list)}"
+                    if duplicate_list:
+                        dup_msg = f"⚠️ Already recorded, skipped: {', '.join(duplicate_list)}"
+                        existing = st.session_state.get('_harvest_error', '')
+                        st.session_state['_harvest_error'] = f"{existing} {dup_msg}".strip() if existing else dup_msg
                     st.rerun()
     else:
         st.info(t('plant_no_active'))
 
-    st.caption(t('plant_hint'))
+    #st.caption(t('plant_hint'))

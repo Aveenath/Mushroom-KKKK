@@ -18,6 +18,12 @@ def show():
     st.caption(f"{t('dash_today')}: {today.strftime('%A, %d %B %Y')}")
     st.markdown("---")
 
+    try:
+        from groq_advisor import refresh_predicted_dates_cached
+        refresh_predicted_dates_cached(st.session_state.username)
+    except Exception:
+        pass
+
     conn = get_db_connection()
     planting_df = db_read_sql(
         "SELECT * FROM planting_records WHERE username = ? ORDER BY block_id",

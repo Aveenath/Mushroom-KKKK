@@ -86,7 +86,7 @@ def _build_log_pdf(df_log, username):
 
 
 def show():
-    st.title("🍄 Mushroom Detection")
+    st.title("🍄 AI Mushroom Detection System")
 
     # ── Session state init ─────────────────────────────────────────
     if "last_processed_file" not in st.session_state:
@@ -105,15 +105,15 @@ def show():
         st.stop()
 
     # ── Section Selector ───────────────────────────────────────────
-    st.markdown("### 📍 Select Section")
+    st.markdown("### 📍 Select Mushroom Block")
     section_options = _build_section_options()
     selected_section = st.selectbox(
-        "Section",
+        "Block",
         options=section_options,
         index=0,
         key="sel_section"
     )
-    st.info(f"📍 Selected Section: **{selected_section}**")
+    st.info(f"📍 Selected Mushroom Block: **{selected_section}**")
 
     if st.session_state.last_section != selected_section:
         st.session_state.last_section = selected_section
@@ -124,7 +124,7 @@ def show():
     # ── Input Method ───────────────────────────────────────────────
     input_method = st.radio(
         "Choose Input Method",
-        ["📷 Take Photo", "📂 Upload File"],
+        ["📷 Take Mushroom Photo", "📂 Upload Mushroom Photo"],
         horizontal=True
     )
 
