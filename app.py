@@ -283,7 +283,7 @@ if not st.session_state.logged_in:
                                            0 0 0 2px rgba(255,255,255,0.08);'>
                     <div style='text-align:center; width:100%; display:flex;
                                 flex-direction:column; align-items:center;'>
-                        <h1 style='color:#5dba60; font-size:2.0rem; font-weight:800; margin:0;
+                        <h1 style='color:#5dba60; font-size:1.5rem; font-weight:800; margin:0;
                                    letter-spacing:-0.01em; line-height:1.25;
                                    text-shadow:0 0 36px rgba(76,175,80,0.45);'>
                             Projek Cendawan Berintegrasi AI
