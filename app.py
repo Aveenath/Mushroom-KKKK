@@ -274,22 +274,25 @@ if not st.session_state.logged_in:
             <div style='text-align:center; padding-bottom:20px;'>
                 <div class='login-title-glow'
                      style='display:inline-flex; align-items:center; gap:18px;
-                            justify-content:center; margin-bottom:14px;'>
+                            justify-content:center; margin-bottom:14px; flex-wrap:wrap;'>
                     <img src='data:image/png;base64,{_kkc_b64}'
-                         style='height:78px; width:78px; object-fit:cover;
+                         style='height:78px; width:auto; object-fit:contain;
+                                max-width:220px; max-height:78px;
                                 border-radius:18px;
                                 box-shadow:0 6px 24px rgba(0,0,0,0.55),
                                            0 0 0 2px rgba(255,255,255,0.08);'>
-                    <div style='text-align:left;'>
+                    <div style='text-align:center; width:100%; display:flex;
+                                flex-direction:column; align-items:center;'>
                         <h1 style='color:#5dba60; font-size:2.0rem; font-weight:800; margin:0;
                                    letter-spacing:-0.01em; line-height:1.25;
                                    text-shadow:0 0 36px rgba(76,175,80,0.45);'>
-                            Projek Cendawan<br>Berintegrasi AI
+                            Projek Cendawan Berintegrasi AI
                         </h1>
                         <div style='color:#556655; font-size:0.72rem; font-weight:600;
                                     letter-spacing:0.12em; text-transform:uppercase;
-                                    margin-top:5px;'>
-                            Kolej Komuniti Chenderoh
+                                    margin-top:5px; text-align:center; white-space:nowrap;
+                                    width:auto;'>
+                            PERAK CULINARY ARTS ACADEMY @KOLEJ KOMUNITI CHENDEROH
                         </div>
                     </div>
                 </div>
