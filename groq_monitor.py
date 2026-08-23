@@ -218,11 +218,12 @@ def get_monitor_advice(username=None, lang="English"):
     try:
         client   = Groq(api_key=api_key)
         response = client.chat.completions.create(
-            model           = "openai/gpt-oss-120b",
-            messages        = [{"role": "user", "content": prompt}],
-            temperature     = 0.3,
-            max_tokens      = 600,
-            response_format = {"type": "json_object"},
+            model            = "openai/gpt-oss-120b",
+            messages         = [{"role": "user", "content": prompt}],
+            temperature      = 0.3,
+            max_tokens       = 800,       
+            response_format  = {"type": "json_object"},
+            reasoning_effort  = "low",
         )
         raw_text = response.choices[0].message.content
         result   = json.loads(raw_text)
