@@ -596,7 +596,7 @@ def get_harvest_advice(username, lang="English"):
         client = Groq(api_key=api_key)
         prompt = _build_advice_prompt(today, sensor_text, flags, block_summary, lang=lang)
         response = client.chat.completions.create(
-            model           = "llama-3.3-70b-versatile",
+            model           = "openai/gpt-oss-120b",
             messages        = [{"role": "user", "content": prompt}],
             temperature     = 0.3,
             max_tokens      = 400,

@@ -400,7 +400,7 @@ if st.sidebar.button(t('nav_logout')):
     st.session_state.role      = "user"
     st.rerun()
 
-# ---- PAGE ROUTING ----
+# --- PAGE ROUTING ---
 if page == "Dashboard":
     from views.dashboard import show
     show()
